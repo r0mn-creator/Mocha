@@ -7,8 +7,12 @@ package info.cemu.cemu.games.list
 import android.content.Context
 import android.content.Intent
 import android.provider.DocumentsContract
+import android.view.KeyEvent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -20,11 +24,13 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -33,6 +39,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.pullToRefresh
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
@@ -51,6 +58,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -60,7 +68,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import info.cemu.cemu.R
-import info.cemu.cemu.common.ui.components.FilledSearchToolbar
+import info.cemu.cemu.common.input.GamepadInputSource
 import info.cemu.cemu.common.ui.extensions.showMessage
 import info.cemu.cemu.common.ui.localization.tr
 import info.cemu.cemu.games.GameIcon
@@ -68,6 +76,7 @@ import info.cemu.cemu.nativeinterface.NativeActiveSettings
 import info.cemu.cemu.nativeinterface.NativeGameTitles
 import info.cemu.cemu.nativeinterface.NativeGameTitles.Game
 import info.cemu.cemu.provider.DocumentsProvider
+import info.cemu.cemu.settings.gamespath.GamesPathsViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
@@ -90,16 +99,61 @@ fun GamesListScreen(
     val coroutineScope = rememberCoroutineScope()
     var refreshing by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
-    val gameSearchQuery by gamesListViewModel.filterText.collectAsStateWithLifecycle()
     val games by gamesListViewModel.games.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     val state = rememberPullToRefreshState()
 
+    // Games/Graphic Packs/Title Manager/Settings, in top-bar left-to-right
+    // order - this is also the order L1/R1 cycle through. Index 0 is this
+    // screen itself, so navigating "to" it is a no-op.
+    val topBarTabs = listOf(
+        tr("Games") to {},
+        tr("Graphic packs") to goToGraphicPacks,
+        tr("Title manager") to goToTitleManager,
+        tr("Settings") to goToSettings,
+    )
+
+    LaunchedEffect(Unit) {
+        GamepadInputSource.keyEvents.collect { (keyEvent) ->
+            if (keyEvent.action != KeyEvent.ACTION_DOWN) return@collect
+            val delta = when (keyEvent.keyCode) {
+                KeyEvent.KEYCODE_BUTTON_L1 -> -1
+                KeyEvent.KEYCODE_BUTTON_R1 -> 1
+                else -> return@collect
+            }
+            // Currently-showing tab is always index 0 (this screen); the
+            // other three are reached directly rather than tracked as a
+            // separate highlight state, since there is nothing to highlight
+            // towards until navigation actually happens.
+            val target = ((0 + delta) + topBarTabs.size) % topBarTabs.size
+            topBarTabs[target].second()
+        }
+    }
+
     LaunchedEffect(lifecycleState) {
         if (lifecycleState == Lifecycle.State.RESUMED && gamesListViewModel.gamePathsHaveChanged())
             gamesListViewModel.refreshGames()
     }
+
+    val gamesPathsViewModel: GamesPathsViewModel = viewModel()
+    val gamesPaths by gamesPathsViewModel.gamesPaths.collectAsState()
+    val addGamesPathLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            if (uri == null) return@rememberLauncherForActivityResult
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+            val documentFile =
+                DocumentFile.fromTreeUri(context, uri) ?: return@rememberLauncherForActivityResult
+            val gamesPath = documentFile.uri.toString()
+            if (gamesPaths.contains(gamesPath)) {
+                snackbarHostState.showMessage(coroutineScope, tr("Games path already added"))
+                return@rememberLauncherForActivityResult
+            }
+            gamesPathsViewModel.addGamesPath(gamesPath)
+        }
 
     DisposableEffect(lifecycleOwner) {
         onDispose {
@@ -109,13 +163,21 @@ fun GamesListScreen(
 
     Scaffold(
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
+        floatingActionButton = {
+            FloatingActionButton(onClick = { addGamesPathLauncher.launch(null) }) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_add),
+                    contentDescription = tr("Add games directory"),
+                )
+            }
+        },
         topBar = {
-            FilledSearchToolbar(
+            TopAppBar(
+                title = {
+                    GamesTopBarTabs(tabs = topBarTabs, currentIndex = 0)
+                },
                 actions = {
                     GameListToolBarActionsMenu(
-                        goToSettings = goToSettings,
-                        goToTitleManager = goToTitleManager,
-                        goToGraphicPacks = goToGraphicPacks,
                         goToAboutCemu = goToAboutCemu,
                         openCemuFolder = {
                             if (!tryOpenCemuFolder(context)) {
@@ -143,9 +205,6 @@ fun GamesListScreen(
                         },
                     )
                 },
-                hint = tr("Search games"),
-                query = gameSearchQuery,
-                onValueChange = gamesListViewModel::setFilterText
             )
         },
     ) { scaffoldPadding ->
@@ -385,13 +444,38 @@ private fun GameContextMenu(
     }
 }
 
+/**
+ * The AEX-style top bar: L1/R1 (wired in [GamesListScreen]) cycle through
+ * these same four destinations, so the visible tab row and the bumpers agree
+ * on one order instead of the bumpers driving state the bar doesn't show.
+ */
+@Composable
+private fun GamesTopBarTabs(
+    tabs: List<Pair<String, () -> Unit>>,
+    currentIndex: Int,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        tabs.forEachIndexed { index, (label, onClick) ->
+            val current = index == currentIndex
+            Text(
+                text = label,
+                fontSize = 16.sp,
+                fontWeight = if (current) FontWeight.Bold else FontWeight.Normal,
+                color = if (current) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(enabled = !current, onClick = onClick)
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+            )
+        }
+    }
+}
+
 @Composable
 private fun GameListToolBarActionsMenu(
     openCemuFolder: () -> Unit,
     shareLogFile: () -> Unit,
-    goToSettings: () -> Unit,
-    goToTitleManager: () -> Unit,
-    goToGraphicPacks: () -> Unit,
     goToAboutCemu: () -> Unit,
 ) {
     var expandMenu by remember { mutableStateOf(false) }
@@ -420,18 +504,6 @@ private fun GameListToolBarActionsMenu(
         expanded = expandMenu,
         onDismissRequest = { expandMenu = false }
     ) {
-        DropdownMenuItem(
-            onClick = goToSettings,
-            text = tr("Settings")
-        )
-        DropdownMenuItem(
-            onClick = goToGraphicPacks,
-            text = tr("Graphic packs")
-        )
-        DropdownMenuItem(
-            onClick = goToTitleManager,
-            text = tr("Title manager")
-        )
         DropdownMenuItem(
             onClick = openCemuFolder,
             text = tr("Open Cemu folder")
