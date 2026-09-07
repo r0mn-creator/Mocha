@@ -218,8 +218,28 @@ namespace H264
 				cur++;
 				continue;
 			}
+			// Bound the SPS to just this NAL unit. Without this, h264Parser_ParseSPS()
+			// is handed everything up to the end of the whole buffer (which includes
+			// the PPS and later NALs), so its end-of-NAL check in readTrailingRBSPBits()
+			// can never succeed since it never reaches the artificially large length.
+			uint8* spsEnd = end;
+			for (uint8* p = cur + 2; p < end - 2; p++)
+			{
+				if (p[0] == 0 && p[1] == 0 && p[2] == 1)
+				{
+					// found a start code, but it may be the 4(+)-byte form
+					// (00 00 00 01) - walk back over every leading zero-padding
+					// byte so spsEnd lands on the true end of the SPS RBSP
+					// rather than one of the start code's own zero bytes.
+					uint8* trueEnd = p;
+					while (trueEnd > cur + 2 && trueEnd[-1] == 0)
+						trueEnd--;
+					spsEnd = trueEnd;
+					break;
+				}
+			}
 			h264State_seq_parameter_set_t psp;
-			bool r = h264Parser_ParseSPS(cur+2, end-cur-2, psp);
+			bool r = h264Parser_ParseSPS(cur+2, (uint32)(spsEnd-(cur+2)), psp);
 			if(!r)
 			{
 				cemu_assert_suspicious(); // should not happen

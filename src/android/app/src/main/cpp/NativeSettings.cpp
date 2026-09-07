@@ -426,3 +426,15 @@ Java_info_cemu_cemu_nativeinterface_NativeSettings_saveSettings([[maybe_unused]]
 {
 	GetConfigHandle().Save();
 }
+
+extern "C" [[maybe_unused]] JNIEXPORT jboolean JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeSettings_isCrashDumpEnabled([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz)
+{
+	return GetConfig().crash_dump == CrashDump::Enabled;
+}
+
+extern "C" [[maybe_unused]] JNIEXPORT void JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeSettings_setCrashDumpEnabled([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jboolean enabled)
+{
+	GetConfig().crash_dump = enabled ? CrashDump::Enabled : CrashDump::Disabled;
+}

@@ -594,8 +594,42 @@ static void UpdateStats_CpuPerCore()
 	}
 }
 
+#if BOOST_PLAT_ANDROID
+#include <sys/system_properties.h>
+#include <atomic>
+#include <chrono>
+// Machine-readable FPS trace for perf A/B runs. Enable with:
+//   adb shell setprop debug.mocha.fpslog 1
+// Emits one "MOCHAFPS" line per stats update so a run can be summarised as a
+// distribution rather than read off screenshots. Re-checks the property once a
+// second so it can be toggled live without a restart.
+static bool DbgFpsLogEnabled()
+{
+	static std::atomic<uint64> s_lastCheck{0};
+	static std::atomic<bool> s_enabled{false};
+	uint64 nowMs = (uint64)std::chrono::duration_cast<std::chrono::milliseconds>(
+					   std::chrono::steady_clock::now().time_since_epoch())
+					   .count();
+	if (nowMs - s_lastCheck.load(std::memory_order_relaxed) > 1000)
+	{
+		s_lastCheck.store(nowMs, std::memory_order_relaxed);
+		char buf[PROP_VALUE_MAX] = {};
+		s_enabled.store(__system_property_get("debug.mocha.fpslog", buf) > 0 && buf[0] == '1',
+						std::memory_order_relaxed);
+	}
+	return s_enabled.load(std::memory_order_relaxed);
+}
+#endif
+
 void LatteOverlay_updateStats(double fps, sint32 drawcalls, sint32 fastDrawcalls)
 {
+#if BOOST_PLAT_ANDROID
+	// Logged before the overlay-disabled early-out so measurement does not depend
+	// on the overlay being visible.
+	if (DbgFpsLogEnabled())
+		cemuLog_log(LogType::Force, "MOCHAFPS fps={:.2f} draws={} fastdraws={}", fps, drawcalls, fastDrawcalls);
+#endif
+
 	if (GetConfig().overlay.position == ScreenPosition::kDisabled)
 		return;
 

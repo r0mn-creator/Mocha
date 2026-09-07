@@ -83,6 +83,20 @@ android {
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
+            // AGP maps this build type to CMAKE_BUILD_TYPE=Debug, and the NDK's Debug config
+            // supplies no -O flag at all, so clang defaults to -O0 for every translation unit.
+            // That left the whole emulator - PPC recompiler, AArch64 JIT, Latte GPU translation -
+            // running unoptimized. Compile the debug variant at -O2 while keeping -g so it stays
+            // debuggable and keeps CEMU_DEBUG_ASSERT.
+            @Suppress("UnstableApiUsage")
+            externalNativeBuild {
+                cmake {
+                    arguments(
+                        "-DCMAKE_C_FLAGS_DEBUG=-O2 -g",
+                        "-DCMAKE_CXX_FLAGS_DEBUG=-O2 -g"
+                    )
+                }
+            }
         }
         release {
             isMinifyEnabled = true

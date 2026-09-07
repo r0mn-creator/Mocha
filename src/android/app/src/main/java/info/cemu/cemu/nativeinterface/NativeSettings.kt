@@ -261,4 +261,10 @@ object NativeSettings {
 
     @JvmStatic
     external fun hasCustomNetworkConfiguration(): Boolean
+
+    @JvmStatic
+    external fun isCrashDumpEnabled(): Boolean
+
+    @JvmStatic
+    external fun setCrashDumpEnabled(enabled: Boolean)
 }

@@ -331,6 +331,10 @@ void GameProfile::Save(uint64_t title_id)
 	WRITE_OPTIONAL_ENTRY(graphics_api);
 	fs->writeLine("");
 
+	fs->writeLine("[Audio]");
+	WRITE_ENTRY(disableAudio);
+	fs->writeLine("");
+
 	fs->writeLine("[Controller]");
 	for (int i = 0; i < 8; ++i)
 	{

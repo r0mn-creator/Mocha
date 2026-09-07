@@ -16,6 +16,49 @@
 #include "input/InputManager.h"
 #include "Cafe/OS/libs/swkbd/swkbd.h"
 
+#if defined(__ANDROID__)
+#include <sys/system_properties.h>
+#endif
+
+// TEMP: `adb shell setprop debug.mocha.rtdropfix 0|1` (default on).
+// Hardware clamps an oversized scissor to the render target. Cemu instead discarded the colour
+// buffer whenever the scissor looked bigger, which silently deletes legitimate geometry.
+static bool DbgRtDropFixEnabled()
+{
+	static int s_enabled = 1;
+	static uint32 s_counter = 0;
+	if ((s_counter++ & 0xFF) == 0)
+	{
+#if defined(__ANDROID__)
+		char buf[PROP_VALUE_MAX] = {};
+		if (__system_property_get("debug.mocha.rtdropfix", buf) > 0)
+			s_enabled = atoi(buf);
+		else
+			s_enabled = 1;
+#endif
+	}
+	return s_enabled != 0;
+}
+
+// TEMP diagnostic: allows A/B testing the mip-resolution fix live via
+// `adb shell setprop debug.mocha.mipfix 0|1` (default on).
+static bool DbgMipFixEnabled()
+{
+	static int s_enabled = 1;
+	static uint32 s_counter = 0;
+	if ((s_counter++ & 0xFF) == 0)
+	{
+#if defined(__ANDROID__)
+		char buf[PROP_VALUE_MAX] = {};
+		if (__system_property_get("debug.mocha.mipfix", buf) > 0)
+			s_enabled = atoi(buf);
+		else
+			s_enabled = 1;
+#endif
+	}
+	return s_enabled != 0;
+}
+
 uint32 prevScissorX = 0;
 uint32 prevScissorY = 0;
 uint32 prevScissorWidth = 0;
@@ -300,6 +343,20 @@ LatteTextureView* LatteMRT::GetColorAttachmentTexture(uint32 index, bool createN
 
 	LatteTextureView* colorBufferView = LatteTextureViewLookupCache::lookupSliceEx(colorBufferPhysMem, colorBufferWidth, colorBufferHeight, colorBufferPitch, viewFirstMip, viewFirstSlice, colorBufferFormat, false);
 
+	// The lookup above can only ever return views with firstMip == 0, so if a standalone single-mip
+	// texture was created for an address that is really a sub-mip of a larger mipped texture, it wins
+	// the lookup forever and render target writes land in that orphan. Anything sampling the mipped
+	// texture (e.g. a bloom pyramid read back with textureLod) then reads stale data for that level.
+	// If this address is the start of a mip of an existing mipped texture, render into that mip
+	// instead. The orphan is left alone (simply unused) rather than deleted -- deleting it here just
+	// causes it to be recreated on the next bind.
+	if (DbgMipFixEnabled() && (!colorBufferView || colorBufferView->baseTexture->mipLevels == 1))
+	{
+		LatteTextureView* mipView = LatteTexture_GetMipViewAtAddress(colorBufferPhysMem, colorBufferFormat, false, colorBufferWidth);
+		if (mipView)
+			colorBufferView = mipView;
+	}
+
 	if (colorBufferView == nullptr)
 	{
 		// create color buffer view
@@ -371,8 +428,21 @@ uint8 LatteMRT::GetActiveColorBufferMask(const LatteDecompilerShader* pixelShade
 		if ((colorBufferWidth < (sint32)scissorAccessWidth) ||
 			(colorBufferHeight < (sint32)scissorAccessHeight))
 		{
-            // log this?
-			colorBufferMask &= ~(1<<i);
+			// TEMP diagnostic: this heuristic is admittedly a guess ("we dont know if this matches
+			// HW behavior") and dropping the target here can discard legitimate world geometry.
+			{
+				static std::set<uint64> s_seenDrop;
+				uint64 k = ((uint64)colorBufferWidth << 48) ^ ((uint64)colorBufferHeight << 32) ^ ((uint64)scissorAccessWidth << 16) ^ (uint64)scissorAccessHeight;
+				if (s_seenDrop.insert(k).second)
+					cemuLog_logDebug(LogType::Force, "RTDROP rt={}x{} scissor={}x{} idx={} rawTL=0x{:08x} rawBR=0x{:08x} TLx={} TLy={} BRx={} BRy={} regSize=0x{:08x}",
+						colorBufferWidth, colorBufferHeight, scissorAccessWidth, scissorAccessHeight, i,
+						lcr.PA_SC_GENERIC_SCISSOR_TL.getRawValue(), lcr.PA_SC_GENERIC_SCISSOR_BR.getRawValue(),
+						lcr.PA_SC_GENERIC_SCISSOR_TL.get_TL_X(), lcr.PA_SC_GENERIC_SCISSOR_TL.get_TL_Y(),
+						lcr.PA_SC_GENERIC_SCISSOR_BR.get_BR_X(), lcr.PA_SC_GENERIC_SCISSOR_BR.get_BR_Y(),
+						regColorSize);
+			}
+			if (!DbgRtDropFixEnabled())
+				colorBufferMask &= ~(1<<i);
 		}
 
 	}
@@ -440,6 +510,28 @@ Latte::E_GX2SURFFMT LatteMRT::GetDepthBufferFormat(const LatteContextRegister& l
 	return Latte::E_GX2SURFFMT::D16_UNORM;
 }
 
+// TEMP diagnostic helper: read pass-skip mode once per process from an Android system property
+#if defined(__ANDROID__)
+#include <sys/system_properties.h>
+#endif
+static int DbgGetSkipMode()
+{
+	// re-read periodically so the mode can be toggled live without restarting
+	static int s_skipMode = 0;
+	static uint32 s_counter = 0;
+	if ((s_counter++ & 0xFF) == 0)
+	{
+#if defined(__ANDROID__)
+		char buf[PROP_VALUE_MAX] = {};
+		if (__system_property_get("debug.mocha.skip", buf) > 0)
+			s_skipMode = atoi(buf);
+		else
+			s_skipMode = 0;
+#endif
+	}
+	return s_skipMode;
+}
+
 bool LatteMRT::UpdateCurrentFBO()
 {
 	catchOpenGLError();
@@ -467,6 +559,8 @@ bool LatteMRT::UpdateCurrentFBO()
 	uint32 scissorHeight = LatteGPUState.contextNew.PA_SC_GENERIC_SCISSOR_BR.get_BR_Y() - scissorY;
 	uint32 scissorAccessWidth = scissorX + scissorWidth;
 	uint32 scissorAccessHeight = scissorY + scissorHeight;
+	// TEMP diagnostic: capture RT0 identity so we can map pixel shaders to passes
+	uint32 dbgRt0Fmt = 0xFFFF; sint32 dbgRt0W = 0, dbgRt0H = 0; uint32 dbgRt0Addr = 0; sint32 dbgRt0Mip = -1; sint32 dbgRt0MipCount = 0;
 	// color buffers
 	for (uint32 i = 0; i < Latte::GPU_LIMITS::NUM_COLOR_ATTACHMENTS; i++)
 	{
@@ -484,6 +578,16 @@ bool LatteMRT::UpdateCurrentFBO()
 
 		sint32 colorAttachmentWidth, colorAttachmentHeight;
 		colorAttachmentView->baseTexture->GetSize(colorAttachmentWidth, colorAttachmentHeight, colorAttachmentView->firstMip);
+
+		if (i == 0)
+		{
+			dbgRt0Fmt = (uint32)colorAttachmentView->baseTexture->format;
+			dbgRt0W = colorAttachmentWidth;
+			dbgRt0H = colorAttachmentHeight;
+			dbgRt0Addr = colorAttachmentView->baseTexture->physAddress;
+			dbgRt0Mip = colorAttachmentView->firstMip;
+			dbgRt0MipCount = colorAttachmentView->baseTexture->mipLevels;
+		}
 
 		// set effective size
 		sint32 effectiveWidth, effectiveHeight;
@@ -507,6 +611,42 @@ bool LatteMRT::UpdateCurrentFBO()
 		if (colorAttachmentView)
 			continue;
 	}
+
+	// TEMP diagnostic: log each distinct (pixel shader -> render target) pairing once
+	if (pixelShader && dbgRt0Fmt != 0xFFFF)
+	{
+		static std::set<uint64> s_seenPasses;
+		uint64 key = pixelShader->baseHash ^ (pixelShader->auxHash * 0x9E3779B97F4A7C15ull) ^ ((uint64)dbgRt0Fmt << 48) ^ ((uint64)dbgRt0W << 32) ^ ((uint64)dbgRt0H << 16);
+		if (s_seenPasses.insert(key).second)
+			cemuLog_logDebug(LogType::Force, "PASS ps={:016x}_{:016x} rt=0x{:04x} {}x{} addr={:08x} mip={}/{}", pixelShader->baseHash, pixelShader->auxHash, dbgRt0Fmt, dbgRt0W, dbgRt0H, dbgRt0Addr, dbgRt0Mip, dbgRt0MipCount);
+	}
+
+	// TEMP diagnostic: count how often bloom-region binds resolve to an orphan vs the mip pyramid
+	if (dbgRt0Fmt == 0x816 && dbgRt0Addr >= 0x12700000 && dbgRt0Addr < 0x12800000)
+	{
+		static uint32 s_orphanHits = 0, s_pyramidHits = 0, s_tick = 0;
+		if (dbgRt0MipCount > 1) s_pyramidHits++; else s_orphanHits++;
+		if ((++s_tick % 600) == 0)
+			cemuLog_logDebug(LogType::Force, "BLOOMSEL orphan={} pyramid={}", s_orphanHits, s_pyramidHits);
+	}
+
+	// TEMP diagnostic: pass-bisection. Set via `adb shell setprop debug.mocha.skip <n>` then relaunch.
+	if (pixelShader && dbgRt0Fmt != 0xFFFF && DbgGetSkipMode() != 0)
+	{
+		const int skipMode = DbgGetSkipMode();
+		bool skip = false;
+		switch (skipMode)
+		{
+		case 1: skip = (dbgRt0Fmt == 0x816 && dbgRt0W <= 512); break;               // bloom downsample chain
+		case 2: skip = (pixelShader->baseHash == 0xfeb5d972ea2d6496ull); break;     // fog / atmospheric scattering
+		case 3: skip = (dbgRt0Fmt == 0x820); break;                                 // RGBA16F exposure chain
+		case 4: skip = (dbgRt0Fmt == 0x816 && dbgRt0W == 1280); break;              // main HDR scene (sanity check)
+		default: break;
+		}
+		if (skip)
+			return false; // draw is skipped by the caller
+	}
+
 	// depth buffer
 	if (depthBufferMask)
 	{
@@ -1075,6 +1215,21 @@ void LatteRenderTarget_updateScissorBox()
 		scissorY = (sint32)((float)scissorY * ((float)sLatteRenderTargetState.currentEffectiveSize.height / (float)sLatteRenderTargetState.currentRenderSize.height));
 		scissorWidth = (sint32)((float)scissorWidth * ((float)sLatteRenderTargetState.currentEffectiveSize.width / (float)sLatteRenderTargetState.currentRenderSize.width));
 		scissorHeight = (sint32)((float)scissorHeight * ((float)sLatteRenderTargetState.currentEffectiveSize.height / (float)sLatteRenderTargetState.currentRenderSize.height));
+	}
+
+	if (DbgRtDropFixEnabled())
+	{
+		// clamp to the render target - an oversized scissor is legal on HW (it is clamped), but
+		// Vulkan needs it inside the framebuffer
+		sint32 rtW = sLatteRenderTargetState.currentEffectiveSize.width;
+		sint32 rtH = sLatteRenderTargetState.currentEffectiveSize.height;
+		if (rtW > 0 && rtH > 0)
+		{
+			if ((sint32)scissorX > rtW) scissorX = rtW;
+			if ((sint32)scissorY > rtH) scissorY = rtH;
+			if ((sint32)(scissorX + scissorWidth) > rtW) scissorWidth = rtW - scissorX;
+			if ((sint32)(scissorY + scissorHeight) > rtH) scissorHeight = rtH - scissorY;
+		}
 	}
 
 	if( scissorX != prevScissorX || scissorY != prevScissorY || scissorWidth != prevScissorWidth || scissorHeight != prevScissorHeight )

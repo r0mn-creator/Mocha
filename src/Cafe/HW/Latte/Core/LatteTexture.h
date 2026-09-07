@@ -331,6 +331,7 @@ std::vector<LatteTextureInformation> LatteTexture_QueryCacheInfo();
 float* LatteTexture_getEffectiveTextureScale(LatteConst::ShaderType shaderType, sint32 texUnit);
 
 LatteTextureView* LatteTexture_CreateTexture(Latte::E_DIM dim, MPTR physAddress, MPTR physMipAddress, Latte::E_GX2SURFFMT format, uint32 width, uint32 height, uint32 depth, uint32 pitch, uint32 mipLevels, uint32 swizzle, Latte::E_HWTILEMODE tileMode, bool isDepth);
+LatteTextureView* LatteTexture_GetMipViewAtAddress(MPTR physAddr, Latte::E_GX2SURFFMT format, bool isDepth, sint32 width);
 void LatteTexture_Delete(LatteTexture* texture);
 
 void LatteTextureLoader_writeReadbackTextureToMemory(LatteTextureDefinition* textureData, uint32 sliceIndex, uint32 mipIndex, uint8* linearPixelData);

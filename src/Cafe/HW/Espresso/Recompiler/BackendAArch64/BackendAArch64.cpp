@@ -881,6 +881,7 @@ void* PPCRecompiler_virtualHLE(PPCInterpreter_t* ppcInterpreter, uint32 hleFuncI
 	}
 	else
 	{
+		PPCInterpreter_verifyTracePoint(ppcInterpreter, hleFuncId);
 		auto hleCall = PPCInterpreter_getHLECall(hleFuncId);
 		cemu_assert(hleCall != nullptr);
 		hleCall(ppcInterpreter);

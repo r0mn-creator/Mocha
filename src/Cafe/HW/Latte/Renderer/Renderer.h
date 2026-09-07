@@ -25,6 +25,7 @@ enum class GfxVendor
 	Nvidia,
 	Apple,
 	Mesa,
+	Qualcomm,
 
 	MAX
 };

@@ -164,6 +164,28 @@ void PPCRecompiler_attemptEnter(PPCInterpreter_t* hCPU, uint32 enterAddress)
 }
 bool PPCRecompiler_ApplyIMLPasses(ppcImlGenContext_t& ppcImlGenContext);
 
+// TEMP diagnostic: JIT bisection. Functions whose start address falls inside
+// [debug.mocha.jitlo, debug.mocha.jithi) are NOT recompiled and fall back to the interpreter.
+// Set as hex without 0x, e.g. `adb shell setprop debug.mocha.jitlo 2000000`.
+#if defined(__ANDROID__)
+#include <sys/system_properties.h>
+#endif
+static void DbgGetJitExcludeRange(uint32& lo, uint32& hi)
+{
+	static uint32 s_lo = 0, s_hi = 0;
+	static uint32 s_counter = 0;
+	if ((s_counter++ & 0x3F) == 0)
+	{
+#if defined(__ANDROID__)
+		char buf[PROP_VALUE_MAX] = {};
+		s_lo = (__system_property_get("debug.mocha.jitlo", buf) > 0) ? (uint32)strtoul(buf, nullptr, 16) : 0;
+		buf[0] = 0;
+		s_hi = (__system_property_get("debug.mocha.jithi", buf) > 0) ? (uint32)strtoul(buf, nullptr, 16) : 0;
+#endif
+	}
+	lo = s_lo; hi = s_hi;
+}
+
 PPCRecFunction_t* PPCRecompiler_recompileFunction(PPCFunctionBoundaryTracker::PPCRange_t range, std::set<uint32>& entryAddresses, std::vector<std::pair<MPTR, uint32>>& entryPointsOut, PPCFunctionBoundaryTracker& boundaryTracker)
 {
 	if (range.startAddress >= PPC_REC_CODE_AREA_END)
@@ -171,6 +193,13 @@ PPCRecFunction_t* PPCRecompiler_recompileFunction(PPCFunctionBoundaryTracker::PP
 		cemuLog_log(LogType::Force, "Attempting to recompile function outside of allowed code area");
 		return nullptr;
 	}
+	{
+		uint32 exLo, exHi;
+		DbgGetJitExcludeRange(exLo, exHi);
+		if (exHi > exLo && range.startAddress >= exLo && range.startAddress < exHi)
+			return nullptr; // interpreter fallback for this function
+	}
+
 	uint32 codeGenRangeStart;
 	uint32 codeGenRangeSize = 0;
 	coreinit::OSGetCodegenVirtAddrRangeInternal(codeGenRangeStart, codeGenRangeSize);

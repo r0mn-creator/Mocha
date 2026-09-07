@@ -1,4 +1,9 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
+#if BOOST_PLAT_ANDROID
+#include <sys/system_properties.h>
+#include <atomic>
+#include <cstdlib>
+#endif
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/LatteTextureVk.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.h"
@@ -12,6 +17,22 @@
 #include "imgui/imgui_impl_vulkan.h"
 #include "Cafe/GameProfile/GameProfile.h"
 #include "util/helpers/helpers.h"
+
+// TEMP diagnostic: report WHY a drawcall was dropped, with the shader identity, so a missing
+// world chunk can be traced back to a specific pass.
+static void DbgSkipReason(const char* reason)
+{
+	static std::set<std::string> s_seen;
+	LatteDecompilerShader* ps = LatteSHRC_GetActivePixelShader();
+	LatteDecompilerShader* vs = LatteSHRC_GetActiveVertexShader();
+	char key[256];
+	snprintf(key, sizeof(key), "%s|%016llx|%016llx", reason,
+		(unsigned long long)(ps ? ps->baseHash : 0), (unsigned long long)(vs ? vs->baseHash : 0));
+	if (s_seen.insert(key).second)
+		cemuLog_logDebug(LogType::Force, "DRAWSKIP reason={} ps={:016x} vs={:016x}", reason,
+			ps ? ps->baseHash : 0, vs ? vs->baseHash : 0);
+}
+
 
 extern bool hasValidFramebufferAttached;
 
@@ -576,23 +597,11 @@ VkDescriptorSetInfo* VulkanRenderer::draw_getOrCreateDescriptorSet(PipelineInfo*
 	dsInfo->m_vkObjDescriptorSet = new VKRObjectDescriptorSet();
 	auto vkObjDS = dsInfo->m_vkObjDescriptorSet;
 
-	VkDescriptorSetAllocateInfo allocInfo = {};
-	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	allocInfo.descriptorPool = m_descriptorPool;
-	allocInfo.descriptorSetCount = 1;
-	allocInfo.pSetLayouts = &descriptor_set_layout;
-
-	VkDescriptorSet result;
-	if (vkAllocateDescriptorSets(m_logicalDevice, &allocInfo, &result) != VK_SUCCESS)
-	{
-		UnrecoverableError(fmt::format("Failed to allocate descriptor sets. Currently allocated: Descriptors={} TextureSamplers={} DynUniformBuffers={} StorageBuffers={}",
-			performanceMonitor.vk.numDescriptorSets.get(),
-			performanceMonitor.vk.numDescriptorSamplerTextures.get(),
-			performanceMonitor.vk.numDescriptorDynUniformBuffers.get(),
-			performanceMonitor.vk.numDescriptorStorageBuffers.get()
-		).c_str());
-	}
+	// Falls back to an additional pool if the current one is exhausted, instead of aborting.
+	VkDescriptorPool usedPool = VK_NULL_HANDLE;
+	VkDescriptorSet result = AllocateDescriptorSet(descriptor_set_layout, usedPool);
 	vkObjDS->descriptorSet = result;
+	vkObjDS->descriptorPool = usedPool;
 
 	sint32 textureCount = shader->resourceMapping.getTextureCount();
 
@@ -1252,6 +1261,7 @@ void VulkanRenderer::draw_beginSequence()
 	if (LatteGPUState.activeShaderHasError)
 	{
 		cemuLog_logDebugOnce(LogType::Force, "Skipping drawcalls due to shader error");
+		DbgSkipReason("shaderError");
 		m_state.drawSequenceSkip = true;
 		cemu_assert_debug(false);
 		return;
@@ -1265,6 +1275,7 @@ void VulkanRenderer::draw_beginSequence()
 		if (!LatteMRT::UpdateCurrentFBO())
 		{
 			debug_printf("Rendertarget invalid\n");
+			DbgSkipReason("rendertargetInvalid");
 			m_state.drawSequenceSkip = true;
 			return; // no render target
 		}
@@ -1272,6 +1283,7 @@ void VulkanRenderer::draw_beginSequence()
 		if (!hasValidFramebufferAttached && !streamoutEnable)
 		{
 			debug_printf("Drawcall with no color buffer or depth buffer attached\n");
+			DbgSkipReason("noFramebufferAttached");
 			m_state.drawSequenceSkip = true;
 			return; // no render target
 		}
@@ -1296,16 +1308,93 @@ void VulkanRenderer::draw_beginSequence()
 		rasterizerEnable = true;
 
 	if (rasterizerEnable == false && streamoutEnable == false)
+	{
+		DbgSkipReason("rasterizerDisabled");
 		m_state.drawSequenceSkip = true;
+	}
+}
+
+// TEMP diagnostic: track submitted vs skipped geometry so we can tell "world not drawn" apart from
+// "world drawn but invisible". Logged periodically as DRAWSTAT.
+static void DbgCountDraw(bool skipped, uint32 count, uint32 instanceCount)
+{
+	static uint64 s_submitted = 0, s_skipped = 0, s_verts = 0, s_bigDraws = 0;
+	static uint32 s_tick = 0;
+	if (skipped)
+		s_skipped++;
+	else
+	{
+		s_submitted++;
+		uint64 v = (uint64)count * (instanceCount ? instanceCount : 1);
+		s_verts += v;
+		if (v >= 3000)
+			s_bigDraws++; // chunky meshes: road/terrain/buildings
+	}
+	if ((++s_tick % 20000) == 0)
+		cemuLog_logDebug(LogType::Force, "DRAWSTAT submitted={} skipped={} verts={} bigDraws={}", s_submitted, s_skipped, s_verts, s_bigDraws);
+}
+
+// Draw-index bisection. Renders only draws whose per-frame index is in [drawlo, drawhi), so a
+// visual artifact can be traced to the exact draw call regardless of which shader produces it -
+// shader-level bisection failed here because forcing a shader's output only works if that shader
+// is the one actually painting the pixels.
+//   adb shell setprop debug.mocha.drawhi 0     (0 = disabled, render everything)
+//   adb shell setprop debug.mocha.drawlo 0 ; setprop debug.mocha.drawhi 500
+// When drawmark is set, the pixel shader hash of that draw index is logged once per frame.
+static bool DbgDrawRange(uint32 drawIndex, uint32& outMark)
+{
+	static std::atomic<sint32> s_lo{-1}, s_hi{-1}, s_mark{-1};
+	if (s_hi.load(std::memory_order_relaxed) < 0)
+	{
+		char buf[PROP_VALUE_MAX] = {};
+		s_lo.store(__system_property_get("debug.mocha.drawlo", buf) > 0 ? atoi(buf) : 0, std::memory_order_relaxed);
+		buf[0] = 0;
+		s_hi.store(__system_property_get("debug.mocha.drawhi", buf) > 0 ? atoi(buf) : 0, std::memory_order_relaxed);
+		buf[0] = 0;
+		s_mark.store(__system_property_get("debug.mocha.drawmark", buf) > 0 ? atoi(buf) : -1, std::memory_order_relaxed);
+	}
+	outMark = (uint32)std::max(0, s_mark.load(std::memory_order_relaxed));
+	sint32 hi = s_hi.load(std::memory_order_relaxed);
+	if (hi <= 0)
+		return true; // gate disabled
+	sint32 lo = s_lo.load(std::memory_order_relaxed);
+	return (sint32)drawIndex >= lo && (sint32)drawIndex < hi;
 }
 
 void VulkanRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 instanceCount, uint32 count, MPTR indexDataMPTR, Latte::LATTE_VGT_DMA_INDEX_TYPE::E_INDEX_TYPE indexType, bool isFirst)
 {
-	if (m_state.drawSequenceSkip)
+	// Per-frame draw index. isFirst marks a draw SEQUENCE, not a frame, so key off the frame
+	// counter instead - otherwise the index resets several times per frame and bisection is
+	// meaningless.
+	static thread_local uint32 s_drawIndex = 0;
+	static thread_local uint32 s_lastFrame = 0xFFFFFFFF;
+	if (LatteGPUState.frameCounter != s_lastFrame)
 	{
+		s_lastFrame = LatteGPUState.frameCounter;
+		s_drawIndex = 0;
+	}
+	uint32 thisDraw = s_drawIndex++;
+	uint32 markIdx = 0;
+	if (!DbgDrawRange(thisDraw, markIdx))
+	{
+		DbgCountDraw(true, count, instanceCount);
 		LatteGPUState.drawCallCounter++;
 		return;
 	}
+	if (markIdx != 0 && thisDraw == markIdx)
+	{
+		auto ps = LatteSHRC_GetActivePixelShader();
+		cemuLog_logOnce(LogType::Force, "DRAWMARK draw #{} pixelShader={:016x}_{:016x} verts={}",
+						thisDraw, ps ? ps->baseHash : 0, ps ? ps->auxHash : 0, count);
+	}
+
+	if (m_state.drawSequenceSkip)
+	{
+		DbgCountDraw(true, count, instanceCount);
+		LatteGPUState.drawCallCounter++;
+		return;
+	}
+	DbgCountDraw(false, count, instanceCount);
 
 	// fast clear color as depth
 	if (LatteGPUState.contextNew.GetSpecialStateValues()[8] != 0)

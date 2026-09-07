@@ -102,6 +102,59 @@ Java_info_cemu_cemu_nativeinterface_NativeGameTitles_setShaderMultiplicationAccu
 	NativeGameTitles::g_currentGameProfile.Save(game_title_id);
 }
 
+extern "C" [[maybe_unused]] JNIEXPORT jboolean JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeGameTitles_isAudioDisabledForTitle([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jlong game_title_id)
+{
+	NativeGameTitles::LoadGameProfile(game_title_id);
+	return NativeGameTitles::g_currentGameProfile.IsAudioDisabled();
+}
+
+extern "C" [[maybe_unused]] JNIEXPORT void JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeGameTitles_setAudioDisabledForTitle([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jlong game_title_id, jboolean disabled)
+{
+	NativeGameTitles::LoadGameProfile(game_title_id);
+	NativeGameTitles::g_currentGameProfile.SetAudioDisabled(disabled);
+	NativeGameTitles::g_currentGameProfile.Save(game_title_id);
+}
+
+extern "C" [[maybe_unused]] JNIEXPORT jboolean JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeGameTitles_isStartWithGamepadViewForTitleEnabled([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jlong game_title_id)
+{
+	NativeGameTitles::LoadGameProfile(game_title_id);
+	return NativeGameTitles::g_currentGameProfile.StartWithGamepadView();
+}
+
+extern "C" [[maybe_unused]] JNIEXPORT void JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeGameTitles_setStartWithGamepadViewForTitleEnabled([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jlong game_title_id, jboolean enabled)
+{
+	NativeGameTitles::LoadGameProfile(game_title_id);
+	NativeGameTitles::g_currentGameProfile.SetStartWithGamepadView(enabled);
+	NativeGameTitles::g_currentGameProfile.Save(game_title_id);
+}
+
+extern "C" [[maybe_unused]] JNIEXPORT jint JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeGameTitles_getPrecompiledShadersForTitle([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jlong game_title_id)
+{
+	NativeGameTitles::LoadGameProfile(game_title_id);
+	return static_cast<jint>(NativeGameTitles::g_currentGameProfile.GetPrecompiledShadersState().value_or(PrecompiledShaderOption::Auto));
+}
+
+extern "C" [[maybe_unused]] JNIEXPORT void JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeGameTitles_setPrecompiledShadersForTitle([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jlong game_title_id, jint precompiled_shaders)
+{
+	NativeGameTitles::LoadGameProfile(game_title_id);
+	NativeGameTitles::g_currentGameProfile.SetPrecompiledShadersState(static_cast<PrecompiledShaderOption>(precompiled_shaders));
+	NativeGameTitles::g_currentGameProfile.Save(game_title_id);
+}
+
+extern "C" [[maybe_unused]] JNIEXPORT void JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeGameTitles_resetGameProfileForTitle([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jlong game_title_id)
+{
+	NativeGameTitles::LoadGameProfile(game_title_id);
+	NativeGameTitles::g_currentGameProfile.ResetOptional();
+	NativeGameTitles::g_currentGameProfile.Save(game_title_id);
+}
+
 extern "C" [[maybe_unused]] JNIEXPORT jobject JNICALL
 Java_info_cemu_cemu_nativeinterface_NativeGameTitles_getDriverSettingForTitle(JNIEnv* env, [[maybe_unused]] jclass clazz, jlong game_title_id)
 {

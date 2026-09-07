@@ -64,6 +64,7 @@ public:
 	struct CustomShader
 	{
 		std::string source;
+		mutable bool wasApplied = false; // diagnostic: has the game actually compiled this hash?
 		uint64 shader_base_hash;
 		uint64 shader_aux_hash;
 		GP_SHADER_TYPE type;

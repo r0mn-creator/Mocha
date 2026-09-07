@@ -8,6 +8,10 @@
 #include "config/LaunchSettings.h"
 #include "Cafe/Account/Account.h"
 #include "util/helpers/helpers.h"
+#if BOOST_PLAT_ANDROID
+#include <sys/system_properties.h>
+#include <atomic>
+#endif
 
 void ActiveSettings::SetPaths(bool isPortableMode,
 		const fs::path& executablePath,
@@ -163,11 +167,40 @@ NetworkService ActiveSettings::GetNetworkService()
 
 bool ActiveSettings::DumpShadersEnabled()
 {
+#if BOOST_PLAT_ANDROID
+	// Shader dumping has no Android UI, so allow it via a property for graphics debugging:
+	//   adb shell setprop debug.mocha.dumpshaders 1
+	// Cached after the first read - this is consulted per shader compile.
+	static std::atomic<sint32> s_prop{-1};
+	sint32 p = s_prop.load(std::memory_order_relaxed);
+	if (p < 0)
+	{
+		char buf[PROP_VALUE_MAX] = {};
+		p = (__system_property_get("debug.mocha.dumpshaders", buf) > 0 && buf[0] == '1') ? 1 : 0;
+		s_prop.store(p, std::memory_order_relaxed);
+	}
+	if (p == 1)
+		return true;
+#endif
 	return s_dump_shaders;
 }
 
 bool ActiveSettings::DumpTexturesEnabled()
 {
+#if BOOST_PLAT_ANDROID
+	// No Android UI for texture dumping; gate it on a property like the shader dump.
+	//   adb shell setprop debug.mocha.dumptextures 1
+	static std::atomic<sint32> s_prop{-1};
+	sint32 p = s_prop.load(std::memory_order_relaxed);
+	if (p < 0)
+	{
+		char buf[PROP_VALUE_MAX] = {};
+		p = (__system_property_get("debug.mocha.dumptextures", buf) > 0 && buf[0] == '1') ? 1 : 0;
+		s_prop.store(p, std::memory_order_relaxed);
+	}
+	if (p == 1)
+		return true;
+#endif
 	return s_dump_textures;
 }
 

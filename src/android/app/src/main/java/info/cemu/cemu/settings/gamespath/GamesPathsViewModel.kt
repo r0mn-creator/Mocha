@@ -13,6 +13,7 @@ class GamesPathsViewModel : ViewModel() {
         if (!_gamesPaths.value.contains(gamesPath)) {
             _gamesPaths.value += gamesPath
             NativeSettings.addGamesPath(gamesPath)
+            NativeSettings.saveSettings()
         }
     }
 
@@ -20,6 +21,7 @@ class GamesPathsViewModel : ViewModel() {
         if (_gamesPaths.value.contains(gamesPath)) {
             _gamesPaths.value -= gamesPath
             NativeSettings.removeGamesPath(gamesPath)
+            NativeSettings.saveSettings()
         }
     }
 }

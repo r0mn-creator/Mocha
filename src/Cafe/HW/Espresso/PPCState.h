@@ -236,6 +236,13 @@ using HLEIDX = sint32;
 HLEIDX PPCInterpreter_registerHLECall(HLECALL hleCall, std::string hleName);
 HLECALL PPCInterpreter_getHLECall(HLEIDX funcIndex);
 
+// JIT differential verifier: records guest state at every HLE call so a JIT run and an interpreter
+// run can be diffed offline. HLE dispatch is the one point that exists identically in both modes,
+// which makes it a safe synchronisation boundary (nothing is ever executed twice).
+void PPCInterpreter_verifyTracePoint(PPCInterpreter_t* hCPU, uint32 hleFuncId);
+// Prints the most recent HLE calls on this thread - used when the NFS boot guard trips.
+void PPCInterpreter_dumpHleHistory(const char* reason);
+
 // HLE scheduler
 
 void PPCInterpreter_relinquishTimeslice();

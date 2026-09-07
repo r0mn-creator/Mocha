@@ -230,4 +230,7 @@ public:
 	~VKRObjectDescriptorSet() override;
 
 	VkDescriptorSet descriptorSet{ VK_NULL_HANDLE };
+	// Descriptor sets may come from any of several pools (a new pool is created when the
+	// current one is exhausted), so each set must remember which pool to free itself back to.
+	VkDescriptorPool descriptorPool{ VK_NULL_HANDLE };
 };

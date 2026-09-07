@@ -334,6 +334,8 @@ GraphicPack2::GraphicPack2(fs::path rulesPath, IniParser& rules)
 			m_gfx_vendor = GfxVendor::Nvidia;
 		else if (boost::iequals(*option_vendorFilter, "apple"))
 			m_gfx_vendor = GfxVendor::Apple;
+		else if (boost::iequals(*option_vendorFilter, "qualcomm") || boost::iequals(*option_vendorFilter, "adreno"))
+			m_gfx_vendor = GfxVendor::Qualcomm;
 		else
 			cemuLog_log(LogType::Force, "Unknown value '{}' for vendorFilter", *option_vendorFilter);
 	}
@@ -1114,6 +1116,20 @@ const std::string* GraphicPack2::FindCustomShaderSource(uint64 shaderBaseHash, u
 		if (isMetalRenderer != (*it).isMetalShader)
 		    continue;
 
+		// A shader-replacing pack silently does nothing if the game never compiles the exact
+		// hash it targets - which is common, because a title can have several variants of the
+		// same material/lighting shader and a pack author only captured one. (Observed with the
+		// community "Bloom Fix" pack for NFS MW U: it replaces 0265594cffa53eb8 while this build
+		// compiles 9681b92b040e8d08, so the pack loaded and had zero effect.) Log each match so
+		// the absence of these lines is a positive signal that a pack matched nothing.
+		// NOTE: cemuLog_logOnce uses a static at the call site, so it would report only the very
+		// first match ever. Track per-shader instead so every replaced shader is accounted for.
+		if (!it->wasApplied)
+		{
+			it->wasApplied = true;
+			cemuLog_log(LogType::Force, "Graphic pack shader applied: {} -> {:016x}_{:016x}",
+						gp->GetVirtualPath(), shaderBaseHash, shaderAuxHash);
+		}
 		return &it->source;
 	}
 	return nullptr;

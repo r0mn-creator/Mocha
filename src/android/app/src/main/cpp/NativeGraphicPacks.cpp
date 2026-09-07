@@ -1,11 +1,67 @@
 #include "Cafe/CafeSystem.h"
 #include "config/CemuConfig.h"
 #include "Cafe/GraphicPack/GraphicPack2.h"
+#include "Cafe/HW/Latte/Core/LatteAsyncCommands.h"
 #include "JNIUtils.h"
 
 namespace NativeGraphicPacks
 {
 	std::unordered_map<sint64, GraphicPackPtr> g_graphicPacks;
+
+	// Live graphic pack switching.
+	//
+	// Shader replacement is normally bound at title launch: GraphicPack2::ActivateForCurrentTitle()
+	// runs once during startup and FindCustomShaderSource is only consulted while a shader is being
+	// compiled. Toggling a pack mid-game therefore had no visible effect until the game was relaunched.
+	//
+	// To apply it live we queue a reload for every shader the pack replaces. The GPU thread picks
+	// those up at its own safe point and frees them, which cascades to their pipelines and cached
+	// descriptor sets; the next draw recompiles them and picks up the new source. Only the hashes the
+	// pack actually overrides are touched - this is not a global cache flush.
+	static void QueueShaderReloadForPack(const GraphicPackPtr& graphicPack)
+	{
+		for (const auto& cs : graphicPack->GetCustomShaders())
+		{
+			LatteConst::ShaderType type;
+			switch (cs.type)
+			{
+			case GraphicPack2::GP_SHADER_TYPE::PIXEL:    type = LatteConst::ShaderType::Pixel; break;
+			case GraphicPack2::GP_SHADER_TYPE::VERTEX:   type = LatteConst::ShaderType::Vertex; break;
+			case GraphicPack2::GP_SHADER_TYPE::GEOMETRY: type = LatteConst::ShaderType::Geometry; break;
+			default: continue;
+			}
+			LatteAsyncCommands_queueReloadShader(cs.shader_base_hash, cs.shader_aux_hash, type);
+		}
+	}
+
+	// Applies an enable/disable to the currently running title without restarting it.
+	// Returns true if the change was applied live.
+	static bool ApplyPackChangeLive(const GraphicPackPtr& graphicPack, bool enable)
+	{
+		if (!CafeSystem::IsTitleRunning())
+			return false;
+		if (!graphicPack->ContainsTitleId(CafeSystem::GetForegroundTitleId()))
+			return false;
+
+		if (enable)
+		{
+			// Activate() loads m_custom_shaders, so the hashes are only known afterwards.
+			if (!graphicPack->IsActivated() && !GraphicPack2::ActivateGraphicPack(graphicPack))
+				return false;
+			QueueShaderReloadForPack(graphicPack);
+		}
+		else
+		{
+			if (!graphicPack->IsActivated())
+				return false;
+			// Deactivate() clears m_custom_shaders, so collect the hashes BEFORE tearing it down.
+			QueueShaderReloadForPack(graphicPack);
+			GraphicPack2::DeactivateGraphicPack(graphicPack);
+		}
+		cemuLog_log(LogType::Force, "Graphic pack applied live: {} ({})",
+					graphicPack->GetVirtualPath(), enable ? "enabled" : "disabled");
+		return true;
+	}
 
 	void SaveGraphicPackStateToConfig(const GraphicPackPtr& graphicPack)
 	{
@@ -146,6 +202,8 @@ Java_info_cemu_cemu_nativeinterface_NativeGraphicPacks_setGraphicPackActive([[ma
 	const auto& graphicPack = NativeGraphicPacks::g_graphicPacks.at(id);
 	graphicPack->SetEnabled(active);
 	NativeGraphicPacks::SaveGraphicPackStateToConfig(graphicPack);
+	// Apply to the running title immediately instead of requiring a relaunch.
+	NativeGraphicPacks::ApplyPackChangeLive(graphicPack, active);
 }
 
 extern "C" [[maybe_unused]] JNIEXPORT void JNICALL

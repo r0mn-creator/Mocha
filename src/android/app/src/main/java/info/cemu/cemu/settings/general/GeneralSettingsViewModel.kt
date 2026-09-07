@@ -8,6 +8,7 @@ import info.cemu.cemu.common.settings.AppSettings
 import info.cemu.cemu.common.settings.AppSettingsStore
 import info.cemu.cemu.common.settings.EmulationSettings
 import info.cemu.cemu.common.settings.GamePadPosition
+import info.cemu.cemu.common.settings.GameListViewMode
 import info.cemu.cemu.common.settings.GuiSettings
 import info.cemu.cemu.common.ui.localization.getAvailableLanguages
 import kotlinx.coroutines.flow.SharingStarted
@@ -56,6 +57,14 @@ class GeneralSettingsViewModel(
                         gamePadPosition = gamePadPosition
                     )
                 )
+            }
+        }
+    }
+
+    fun setGameListViewMode(gameListViewMode: GameListViewMode) {
+        viewModelScope.launch {
+            dataStore.updateData {
+                it.copy(guiSettings = it.guiSettings.copy(gameListViewMode = gameListViewMode))
             }
         }
     }

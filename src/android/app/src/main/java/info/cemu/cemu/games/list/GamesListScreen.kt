@@ -6,6 +6,7 @@ package info.cemu.cemu.games.list
 
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.provider.DocumentsContract
 import android.view.KeyEvent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -14,8 +15,11 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -56,6 +60,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -69,15 +74,19 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import info.cemu.cemu.R
 import info.cemu.cemu.common.input.GamepadInputSource
+import info.cemu.cemu.common.settings.AppSettingsStore
+import info.cemu.cemu.common.settings.GameListViewMode
 import info.cemu.cemu.common.ui.extensions.showMessage
 import info.cemu.cemu.common.ui.localization.tr
 import info.cemu.cemu.games.GameIcon
+import info.cemu.cemu.games.boxart.BoxArtImage
 import info.cemu.cemu.nativeinterface.NativeActiveSettings
 import info.cemu.cemu.nativeinterface.NativeGameTitles
 import info.cemu.cemu.nativeinterface.NativeGameTitles.Game
 import info.cemu.cemu.provider.DocumentsProvider
 import info.cemu.cemu.settings.gamespath.GamesPathsViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.io.File
 import androidx.compose.material3.DropdownMenuItem as MaterialDropdownMenuItem
@@ -101,6 +110,9 @@ fun GamesListScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val games by gamesListViewModel.games.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val gameListViewMode by AppSettingsStore.dataStore.data
+        .map { it.guiSettings.gameListViewMode }
+        .collectAsStateWithLifecycle(initialValue = GameListViewMode.LIST)
 
     val state = rememberPullToRefreshState()
 
@@ -225,25 +237,56 @@ fun GamesListScreen(
                     },
                 ),
         ) {
-            GameList(
-                games = games,
-                setFavorite = gamesListViewModel::setGameTitleFavorite,
-                deleteShaderCaches = {
-                    gamesListViewModel.removeShadersForGame(it)
-                    snackbarHostState.showMessage(coroutineScope, tr("Shader caches removed"))
-                },
-                startGame = startGame,
-                goToGameDetails = goToGameDetails,
-                goToGameEditProfile = goToGameEditProfile,
-                createShortcut = {
-                    if (!tryCreateShortcut(it)) {
-                        snackbarHostState.showMessage(
-                            coroutineScope,
-                            tr("Couldn't create shortcut for game")
-                        )
-                    }
-                },
-            )
+            val deleteShaderCaches: (Game) -> Unit = {
+                gamesListViewModel.removeShadersForGame(it)
+                snackbarHostState.showMessage(coroutineScope, tr("Shader caches removed"))
+            }
+            val createShortcut: (Game) -> Unit = {
+                if (!tryCreateShortcut(it)) {
+                    snackbarHostState.showMessage(
+                        coroutineScope,
+                        tr("Couldn't create shortcut for game")
+                    )
+                }
+            }
+
+            when (gameListViewMode) {
+                GameListViewMode.LIST -> GameList(
+                    games = games,
+                    setFavorite = gamesListViewModel::setGameTitleFavorite,
+                    deleteShaderCaches = deleteShaderCaches,
+                    startGame = startGame,
+                    goToGameDetails = goToGameDetails,
+                    goToGameEditProfile = goToGameEditProfile,
+                    createShortcut = createShortcut,
+                )
+
+                GameListViewMode.GRID -> GameGridList(
+                    games = games,
+                    columns = gridColumnsForOrientation(landscape = 6, portrait = 4),
+                    imageAspectRatio = 1f,
+                    imageContent = { game, modifier -> GameIcon(game = game, modifier = modifier) },
+                    setFavorite = gamesListViewModel::setGameTitleFavorite,
+                    deleteShaderCaches = deleteShaderCaches,
+                    startGame = startGame,
+                    goToGameDetails = goToGameDetails,
+                    goToGameEditProfile = goToGameEditProfile,
+                    createShortcut = createShortcut,
+                )
+
+                GameListViewMode.BOX_ART -> GameGridList(
+                    games = games,
+                    columns = gridColumnsForOrientation(landscape = 5, portrait = 3),
+                    imageAspectRatio = 457f / 640f,
+                    imageContent = { game, modifier -> BoxArtImage(game = game, modifier = modifier) },
+                    setFavorite = gamesListViewModel::setGameTitleFavorite,
+                    deleteShaderCaches = deleteShaderCaches,
+                    startGame = startGame,
+                    goToGameDetails = goToGameDetails,
+                    goToGameEditProfile = goToGameEditProfile,
+                    createShortcut = createShortcut,
+                )
+            }
 
             PullToRefreshDefaults.Indicator(
                 modifier = Modifier.align(Alignment.TopCenter),
@@ -304,6 +347,132 @@ private fun GameList(
                 )
             }
         }
+    }
+}
+
+/** Returns [landscape] or [portrait] depending on the current screen
+ *  orientation - box art and icon grids each want a different column count
+ *  per orientation, so this is called with different values per grid rather
+ *  than hard-coding one fixed count. */
+@Composable
+private fun gridColumnsForOrientation(landscape: Int, portrait: Int): Int =
+    if (LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE) landscape else portrait
+
+/** The grid counterpart to [GameList] - same callbacks, same context menu
+ *  and shader-cache dialog, laid out as tiles instead of rows. Used for both
+ *  the plain icon grid and the libretro box-art grid, which only differ in
+ *  column count, tile aspect ratio, and how each tile's image is drawn. */
+@Composable
+private fun GameGridList(
+    games: List<Game>,
+    columns: Int,
+    imageAspectRatio: Float,
+    imageContent: @Composable (Game, Modifier) -> Unit,
+    startGame: (Game) -> Unit,
+    goToGameDetails: (Game) -> Unit,
+    goToGameEditProfile: (Game) -> Unit,
+    setFavorite: (Game, Boolean) -> Unit,
+    createShortcut: (Game) -> Unit,
+    deleteShaderCaches: (Game) -> Unit,
+) {
+    LazyVerticalGrid(
+        modifier = Modifier
+            .padding(8.dp)
+            .fillMaxSize(),
+        columns = GridCells.Fixed(columns),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        items(items = games, key = { it.path }) { game ->
+            var showDeleteShaderConfirmationDialog by remember { mutableStateOf(false) }
+            GameGridItem(
+                modifier = Modifier.animateItem(),
+                game = game,
+                imageAspectRatio = imageAspectRatio,
+                imageContent = imageContent,
+                onStartGame = startGame,
+                onIsFavoriteChanged = { isFavorite -> setFavorite(game, isFavorite) },
+                onEditGameProfile = { goToGameEditProfile(game) },
+                onRemoveShaderCaches = { showDeleteShaderConfirmationDialog = true },
+                onAboutTitle = { goToGameDetails(game) },
+                onCreateShortcut = { createShortcut(game) },
+            )
+
+            if (showDeleteShaderConfirmationDialog) {
+                ShaderCachesConfirmationDialog(
+                    gameName = game.name ?: "",
+                    onDismissRequest = { showDeleteShaderConfirmationDialog = false },
+                    onConfirm = {
+                        deleteShaderCaches(game)
+                        showDeleteShaderConfirmationDialog = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun GameGridItem(
+    onStartGame: (Game) -> Unit,
+    onIsFavoriteChanged: (Boolean) -> Unit,
+    onEditGameProfile: () -> Unit,
+    onRemoveShaderCaches: () -> Unit,
+    onAboutTitle: () -> Unit,
+    onCreateShortcut: () -> Unit,
+    game: Game,
+    imageAspectRatio: Float,
+    imageContent: @Composable (Game, Modifier) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var contextMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    Column(
+        modifier = modifier
+            .combinedClickable(
+                onClick = { onStartGame(game) },
+                onLongClick = { contextMenuExpanded = true },
+            )
+            .padding(4.dp),
+    ) {
+        Box {
+            imageContent(
+                game,
+                Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(imageAspectRatio)
+                    .clip(RoundedCornerShape(8.dp)),
+            )
+            if (game.isFavorite) {
+                Icon(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp)
+                        .size(24.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                    painter = painterResource(R.drawable.ic_favorite),
+                    tint = MaterialTheme.colorScheme.primary,
+                    contentDescription = null
+                )
+            }
+            GameContextMenu(
+                expanded = contextMenuExpanded,
+                onDismissRequest = { contextMenuExpanded = false },
+                game = game,
+                onIsFavoriteChanged = onIsFavoriteChanged,
+                onEditGameProfile = onEditGameProfile,
+                onRemoveShaderCaches = onRemoveShaderCaches,
+                onAboutTitle = onAboutTitle,
+                onCreateShortcut = onCreateShortcut,
+            )
+        }
+        Text(
+            modifier = Modifier.padding(top = 4.dp),
+            text = game.name ?: "",
+            fontSize = 14.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

@@ -1,0 +1,9 @@
+[Definition]
+titleIds = 0005000010128800,0005000010128400,000500001012b700
+name = "Boot Memory Fix"
+path = "Need for Speed Most Wanted U/Workaround/Boot Memory Fix"
+description = Extends the low code region so the boot-time write to 0x0012a9d0 lands in mapped memory.
+version = 6
+
+[RAM]
+mapping0 = 0x00010000-0x00200000

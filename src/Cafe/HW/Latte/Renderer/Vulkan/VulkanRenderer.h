@@ -271,6 +271,9 @@ public:
 
 	void DrawBackbufferQuad(LatteTextureView* texView, RendererOutputShader* shader, bool useLinearTexFilter, sint32 imageX, sint32 imageY, sint32 imageWidth, sint32 imageHeight, bool padView, bool clearBackground) override;
 	void CreateDescriptorPool();
+	// Allocates a descriptor set, transparently creating an additional pool if the current one
+	// is exhausted. Returns the pool the set came from via outPool so it can be freed correctly.
+	VkDescriptorSet AllocateDescriptorSet(VkDescriptorSetLayout layout, VkDescriptorPool& outPool);
 	VkDescriptorSet backbufferBlit_createDescriptorSet(VkDescriptorSetLayout descriptor_set_layout, LatteTextureViewVk* texViewVk, bool useLinearTexFilter);
 
 	robin_hood::unordered_flat_map<uint64, robin_hood::unordered_flat_map<uint64, PipelineInfo*> > m_pipeline_info_cache; // using robin_hood::unordered_flat_map is twice as fast (1-2% overall CPU time reduction)
@@ -432,7 +435,11 @@ private:
 
 	VkRenderPass m_imguiRenderPass = VK_NULL_HANDLE;
 
-	VkDescriptorPool m_descriptorPool;
+	VkDescriptorPool m_descriptorPool; // current pool new allocations are taken from
+	// Every pool ever created, so all of them can be destroyed at shutdown. A single fixed-size
+	// pool used to abort the emulator once an open-world game had streamed enough unique
+	// texture/material combinations to exhaust it (~14 min in NFS MW U at 30fps).
+	std::vector<VkDescriptorPool> m_descriptorPools;
 
   public:
 	struct QueueFamilyIndices

@@ -969,6 +969,49 @@ void LatteTexture_RecreateTextureWithDifferentMipSliceCount(LatteTexture* textur
 // create new texture representation
 // if allowCreateNewDataTexture is true, a new texture will be created if necessary. If it is false, only existing textures may be used, except if a data-compatible version of the requested texture already exists and it's not view compatible (todo - we should differentiate between Latte compatible views and renderer compatible)
 // the returned view will map to the provided mip and slice range within the created texture, this is to match the behavior of lookupSliceEx
+// Resolve a render target address to a mip of an existing mipped texture.
+//
+// The CB_COLOR*_SIZE register pads the surface height, so when a game renders into mip N of a
+// texture the bound surface can look like a standalone image of a different size. Cemu then creates
+// a separate single-mip texture for it, and those writes become invisible to shaders that sample the
+// full mip chain (e.g. a bloom pyramid read back with textureLod), leaving those levels stale.
+// Matching on the mip's exact start address and width lets the mip chain win over the padded size.
+LatteTextureView* LatteTexture_GetMipViewAtAddress(MPTR physAddr, Latte::E_GX2SURFFMT format, bool isDepth, sint32 width)
+{
+	LatteTexture* bestTex = nullptr;
+	sint32 bestMip = 0;
+	sint32 bestSlice = 0;
+	loopItrMemOccupancyBuckets(physAddr, physAddr + 1)
+	{
+		for (auto& occupancy : list_texMemOccupancyBucket[bucketIndex])
+		{
+			if (occupancy.addrStart != physAddr)
+				continue;
+			LatteTextureSliceMipInfo* sliceMipInfo = occupancy.sliceMipInfo;
+			if (!sliceMipInfo)
+				continue;
+			LatteTexture* tex = sliceMipInfo->texture;
+			if (!tex || tex->mipLevels <= 1)
+				continue;
+			if (sliceMipInfo->mipIndex <= 0 || sliceMipInfo->mipIndex >= tex->mipLevels)
+				continue;
+			if (tex->format != format || tex->isDepth != isDepth)
+				continue;
+			if (std::max(1, tex->width >> sliceMipInfo->mipIndex) != width)
+				continue;
+			if (!bestTex || tex->mipLevels > bestTex->mipLevels)
+			{
+				bestTex = tex;
+				bestMip = sliceMipInfo->mipIndex;
+				bestSlice = sliceMipInfo->sliceIndex;
+			}
+		}
+	}
+	if (!bestTex)
+		return nullptr;
+	return bestTex->GetOrCreateView(Latte::E_DIM::DIM_2D, format, bestMip, 1, bestSlice, 1);
+}
+
 LatteTextureView* LatteTexture_CreateMapping(MPTR physAddr, MPTR physMipAddr, sint32 width, sint32 height, sint32 depth, sint32 pitch, Latte::E_HWTILEMODE tileMode, uint32 swizzle, sint32 firstMip, sint32 numMip, sint32 firstSlice, sint32 numSlice, Latte::E_GX2SURFFMT format, Latte::E_DIM dimBase, Latte::E_DIM dimView, bool isDepth, bool allowCreateNewDataTexture)
 {
 	if (format == Latte::E_GX2SURFFMT::INVALID_FORMAT)

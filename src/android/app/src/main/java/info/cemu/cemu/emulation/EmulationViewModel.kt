@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import info.cemu.cemu.common.android.inputdevice.listGameControllers
 import info.cemu.cemu.common.either.Either
 import info.cemu.cemu.common.either.Error
 import info.cemu.cemu.common.either.Success
@@ -24,6 +25,7 @@ import info.cemu.cemu.nativeinterface.NativeEmulation.PrepareTitleResult
 import info.cemu.cemu.nativeinterface.NativeException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
@@ -32,6 +34,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+
+private const val OVERLAY_AUTO_HIDE_DELAY_MS = 3000L
 
 data class SideMenuState(
     val isMotionEnabled: Boolean = false,
@@ -87,10 +91,27 @@ class EmulationViewModel(
                 false,
             )
 
+    // Set as soon as the user touches the overlay-visibility checkbox in the
+    // side menu, so the auto-hide job below never fights a choice they just
+    // made - it only applies its own default before the user has expressed one.
+    private var overlayVisibilityUserControlled = false
+
     init {
         viewModelScope.launch {
             val settings = dataStore.data.first()
-            _sideMenuState.update { it.copy(isInputOverlayVisible = settings.inputOverlaySettings.isOverlayEnabled) }
+            val overlayEnabled = settings.inputOverlaySettings.isOverlayEnabled
+            _sideMenuState.update { it.copy(isInputOverlayVisible = overlayEnabled) }
+
+            // A physical controller means the touch overlay is just a safety
+            // net for the first few seconds, not the primary input - fade it
+            // out once it's had a chance to be seen rather than leaving it
+            // on screen the whole session.
+            if (overlayEnabled && listGameControllers().isNotEmpty()) {
+                delay(OVERLAY_AUTO_HIDE_DELAY_MS)
+                if (!overlayVisibilityUserControlled) {
+                    _sideMenuState.update { it.copy(isInputOverlayVisible = false) }
+                }
+            }
         }
     }
 
@@ -123,6 +144,9 @@ class EmulationViewModel(
     }
 
     fun updateSideMenuState(sideMenuState: SideMenuState) {
+        if (sideMenuState.isInputOverlayVisible != _sideMenuState.value.isInputOverlayVisible) {
+            overlayVisibilityUserControlled = true
+        }
         _sideMenuState.value = sideMenuState
     }
 

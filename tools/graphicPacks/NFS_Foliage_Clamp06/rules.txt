@@ -1,0 +1,6 @@
+[Definition]
+titleIds = 0005000010128800,0005000010128400,000500001012b700
+name = "Foliage Clamp06"
+path = "Need for Speed Most Wanted U/Graphics/Foliage Clamp06"
+description = Tames the blown-out white foliage by limiting the colour-grading pass.
+version = 6

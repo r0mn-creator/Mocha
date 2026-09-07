@@ -27,6 +27,7 @@ public:
 	[[nodiscard]] const std::optional<bool>& ShouldLoadSharedLibraries() const { return m_loadSharedLibraries; }
 	void SetShouldLoadSharedLibraries(bool shouldLoadSharedLibraries) { m_loadSharedLibraries = shouldLoadSharedLibraries; }
 	[[nodiscard]] bool StartWithGamepadView() const { return m_startWithPadView; }
+	void SetStartWithGamepadView(bool startWithPadView) { m_startWithPadView = startWithPadView; }
 
 	[[nodiscard]] const std::optional<GraphicAPI>& GetGraphicsAPI() const { return m_graphics_api; }
 	[[nodiscard]] const AccurateShaderMulOption& GetAccurateShaderMul() const { return m_accurateShaderMul; }
@@ -37,6 +38,7 @@ public:
 	[[nodiscard]] PositionInvariance GetPositionInvariance() const { return m_positionInvariance; }
 #endif
 	[[nodiscard]] const std::optional<PrecompiledShaderOption>& GetPrecompiledShadersState() const { return m_precompiledShaders; }
+	void SetPrecompiledShadersState(PrecompiledShaderOption precompiledShaders) { m_precompiledShaders = precompiledShaders; }
 
 	[[nodiscard]] uint32 GetThreadQuantum() const { return m_threadQuantum; }
 	void SetThreadQuantum(uint32 threadQuantum){ m_threadQuantum = threadQuantum; }
@@ -44,6 +46,7 @@ public:
 	void SetCPUMode(CPUMode cpuMode) { m_cpuMode = cpuMode; }
 
 	[[nodiscard]] bool IsAudioDisabled() const { return m_disableAudio; }
+	void SetAudioDisabled(bool disableAudio) { m_disableAudio = disableAudio; }
 
 	[[nodiscard]] const std::array< std::optional<std::string>, 8>& GetControllerProfile() const { return m_controllerProfile; }
 

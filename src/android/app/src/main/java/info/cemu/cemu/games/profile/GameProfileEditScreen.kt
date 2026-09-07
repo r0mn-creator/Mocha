@@ -5,11 +5,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.MutableCreationExtras
 import androidx.lifecycle.viewmodel.compose.viewModel
+import info.cemu.cemu.common.ui.components.Button
 import info.cemu.cemu.common.ui.components.Header
 import info.cemu.cemu.common.ui.components.ScreenContent
 import info.cemu.cemu.common.ui.components.SingleSelection
@@ -18,6 +22,7 @@ import info.cemu.cemu.common.ui.localization.tr
 import info.cemu.cemu.nativeinterface.NativeEmulation
 import info.cemu.cemu.nativeinterface.NativeGameTitles
 import info.cemu.cemu.nativeinterface.NativeGameTitles.DriverSettingMode
+import info.cemu.cemu.nativeinterface.NativeGameTitles.PrecompiledShaderOption
 
 @Composable
 fun GameProfileEditScreen(
@@ -37,6 +42,11 @@ fun GameProfileEditScreen(
 
     val titleId = game.titleId
 
+    // Bumped after "Reset to default" so every Toggle/SingleSelection below
+    // re-reads its initialState instead of keeping its already-remembered
+    // (now stale) value.
+    var resetGeneration by remember { mutableIntStateOf(0) }
+
     ScreenContent(
         appBarText = tr("Edit game profile"),
         navigateBack = navigateBack,
@@ -44,6 +54,15 @@ fun GameProfileEditScreen(
         contentVerticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Header(text = game.name)
+        Button(
+            label = tr("Reset to default"),
+            description = tr("Remove all per-game overrides for this title"),
+            onClick = {
+                NativeGameTitles.resetGameProfileForTitle(titleId)
+                resetGeneration++
+            },
+        )
+        key(resetGeneration) {
         Toggle(
             label = tr("Load shared libraries"),
             description = tr("Load libraries from the cafeLibs directory"),
@@ -91,6 +110,34 @@ fun GameProfileEditScreen(
             onChoiceChanged = { threadQuantum ->
                 NativeGameTitles.setThreadQuantumForTitle(titleId, threadQuantum)
             })
+        Toggle(
+            label = tr("Disable audio"),
+            initialCheckedState = { NativeGameTitles.isAudioDisabledForTitle(titleId) },
+            onCheckedChanged = { disabled ->
+                NativeGameTitles.setAudioDisabledForTitle(titleId, disabled)
+            },
+        )
+        Toggle(
+            label = tr("Start with GamePad view"),
+            initialCheckedState = { NativeGameTitles.isStartWithGamepadViewForTitleEnabled(titleId) },
+            onCheckedChanged = { enabled ->
+                NativeGameTitles.setStartWithGamepadViewForTitleEnabled(titleId, enabled)
+            },
+        )
+        SingleSelection(
+            label = tr("Precompiled shaders"),
+            initialChoice = { NativeGameTitles.getPrecompiledShadersForTitle(titleId) },
+            choices = listOf(
+                PrecompiledShaderOption.AUTO,
+                PrecompiledShaderOption.ENABLE,
+                PrecompiledShaderOption.DISABLE,
+            ),
+            choiceToString = { precompiledShadersToString(it) },
+            onChoiceChanged = { precompiledShaders ->
+                NativeGameTitles.setPrecompiledShadersForTitle(titleId, precompiledShaders)
+            },
+        )
+        }
         if (supportsLoadingCustomDrivers) {
             SingleSelection(
                 label = tr("Custom driver"),
@@ -114,5 +161,11 @@ private fun cpuModeToString(cpuMode: Int): String = when (cpuMode) {
     NativeGameTitles.CPUMode.SINGLECOREINTERPRETER -> tr("Single-core interpreter")
     NativeGameTitles.CPUMode.SINGLECORERECOMPILER -> tr("Single-core recompiler")
     NativeGameTitles.CPUMode.MULTICORERECOMPILER -> tr("Multi-core recompiler")
+    else -> tr("Auto (recommended)")
+}
+
+private fun precompiledShadersToString(precompiledShaders: Int): String = when (precompiledShaders) {
+    PrecompiledShaderOption.ENABLE -> tr("Enabled")
+    PrecompiledShaderOption.DISABLE -> tr("Disabled")
     else -> tr("Auto (recommended)")
 }

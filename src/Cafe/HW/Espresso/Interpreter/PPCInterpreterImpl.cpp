@@ -2,6 +2,40 @@
 #include "PPCInterpreterHelper.h"
 #include "Cafe/HW/Espresso/Debugger/Debugger.h"
 #include "Cafe/HW/Espresso/Debugger/GDBStub.h"
+#include "Cafe/HW/MMU/MMU.h"
+
+#if BOOST_PLAT_ANDROID
+#include <sys/system_properties.h>
+#include <atomic>
+// Selects the NFS MW U boot-crash STH guard behaviour. See ppcMem_writeDataU16 below.
+//   adb shell setprop debug.mocha.sthmode 0|1|2      (default 1 = skip store, keep going)
+// Read once and cached: this sits on the interpreter's hot store path, so it must not do a
+// property lookup per call.
+static sint32 DbgGetSthGuardMode()
+{
+	static std::atomic<sint32> s_mode{-1};
+	sint32 m = s_mode.load(std::memory_order_relaxed);
+	if (m < 0)
+	{
+		char buf[PROP_VALUE_MAX] = {};
+		m = 1; // default: skip the store, do not touch control flow
+		if (__system_property_get("debug.mocha.sthmode", buf) > 0 && buf[0] >= '0' && buf[0] <= '2')
+			m = buf[0] - '0';
+		s_mode.store(m, std::memory_order_relaxed);
+	}
+	return m;
+}
+// The bad pool-fill loop can issue a great many stores; only log the first few so the guard
+// cannot flood log.txt (10k+ lines per launch was already an observed problem).
+static bool DbgSthShouldLog()
+{
+	static std::atomic<uint32> s_count{0};
+	return s_count.fetch_add(1, std::memory_order_relaxed) < 8;
+}
+#else
+static sint32 DbgGetSthGuardMode() { return 1; }
+static bool DbgSthShouldLog() { return true; }
+#endif
 
 class PPCItpCafeOSUsermode
 {
@@ -36,6 +70,61 @@ public:
 
 	inline static void ppcMem_writeDataU16(PPCInterpreter_t* hCPU, uint32 address, uint16 v)
 	{
+		// Some titles (e.g. Need for Speed: Most Wanted U) intermittently enter a boot-time memory
+		// pool fill loop with a garbage base pointer instead of a real heap allocation, walking off
+		// the end of mapped memory. This call is never observed on a successful boot.
+		//
+		// Mode is selectable at runtime via `adb shell setprop debug.mocha.sthmode N` so the
+		// variants can be A/B'd for launch reliability without a rebuild:
+		//   0 = guard off entirely (original upstream behaviour - writes, usually crashes)
+		//   1 = skip the store and CONTINUE (default). The loop keeps running but every
+		//       subsequent bad write lands in the same guarded range and is skipped too, so it
+		//       runs to completion harmlessly and returns through its own real return path.
+		//   2 = skip the store and UNWIND via the guest stack backchain.
+		//
+		// ⚠️ Mode 2 was the previous default and is NOT safe: when the heap is corrupt the stack
+		// backchain is corrupt too, so the recovered "return address" is garbage. Observed
+		// 2026-09-03: unwound to 0x02ccc21c, guest then executed at IP 0x00000010 and segfaulted.
+		// Guessing a return address out of memory we already know is corrupted cannot be trusted.
+		// Matching a single instruction address was too narrow: the routine has several store
+		// sites. Measured 2026-09-04 - guarding only 0x02cc28d0 let the fill loop walk on to
+		// another STH at 0x02cc2b78 and segfault there instead. Match the whole routine's range.
+		// The `address < 0x01000000` filter is what actually discriminates: across 26 measured
+		// launches it fired on every failure and never once on a success.
+		if (hCPU->instructionPointer >= 0x02cc0000 && hCPU->instructionPointer < 0x02cd0000 && address < 0x01000000)
+		{
+			sint32 mode = DbgGetSthGuardMode();
+			if (mode != 0)
+			{
+				if (mode == 2)
+				{
+					uint32 sp = hCPU->gpr[1];
+					uint32 backchain = memory_readU32(sp);
+					uint32 returnAddress = (backchain > sp) ? memory_readU32(backchain + 4) : 0;
+					if (returnAddress < 0x02000000 || returnAddress > 0x03000000)
+						returnAddress = hCPU->spr.LR;
+					if (DbgSthShouldLog())
+						cemuLog_logDebug(LogType::Force, "STHGUARD skip+unwind: addr 0x{:08x} at IP 0x{:08x} -> 0x{:08x}", address, hCPU->instructionPointer, returnAddress);
+					hCPU->instructionPointer = returnAddress - 4;
+				}
+				else
+				{
+					// Skip the bad store, leave control flow alone.
+					if (DbgSthShouldLog())
+					{
+						cemuLog_logDebug(LogType::Force, "STHGUARD skip: addr 0x{:08x} at IP 0x{:08x} r3=0x{:08x} r4=0x{:08x} LR=0x{:08x}",
+							address, hCPU->instructionPointer, hCPU->gpr[3], hCPU->gpr[4], hCPU->spr.LR);
+						// On a SUCCESSFUL launch this routine is never reached, so the divergence is
+						// earlier: dump what the guest was doing just before.
+						static std::atomic<bool> s_dumped{false};
+						bool expected = false;
+						if (s_dumped.compare_exchange_strong(expected, true))
+							PPCInterpreter_dumpHleHistory("STHGUARD");
+					}
+				}
+				return;
+			}
+		}
 		*(uint16*)(memory_getPointerFromVirtualOffset(address)) = CPU_swapEndianU16(v);
 	}
 

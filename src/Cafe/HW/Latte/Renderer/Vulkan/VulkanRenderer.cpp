@@ -210,6 +210,10 @@ void VulkanRenderer::DetermineVendor()
 	case 0x106B:
 		m_vendor = GfxVendor::Apple;
 		break;
+	case 0x5143: // Qualcomm - Adreno (Android). Without this Adreno fell through to Generic,
+		// so vendor-filtered graphic packs could never match this device.
+		m_vendor = GfxVendor::Qualcomm;
+		break;
 	}
 
 	VkDriverId driverId = driverProperties.driverID;
@@ -818,17 +822,16 @@ VulkanRenderer::~VulkanRenderer()
 
 	vkDestroyPipelineCache(m_logicalDevice, m_pipeline_cache, nullptr);
 
-	if(!m_backbufferBlitDescriptorSetCache.empty())
-	{
-		std::vector<VkDescriptorSet> freeVector;
-		freeVector.reserve(m_backbufferBlitDescriptorSetCache.size());
-		std::transform(m_backbufferBlitDescriptorSetCache.begin(), m_backbufferBlitDescriptorSetCache.end(), std::back_inserter(freeVector), [](auto& i) {
-		  return i.second;
-		});
-		vkFreeDescriptorSets(m_logicalDevice, m_descriptorPool, freeVector.size(), freeVector.data());
-	}
+	// NOTE: the backbuffer blit sets are deliberately NOT freed individually here. They may have
+	// come from any pool, and vkDestroyDescriptorPool already frees every set allocated from it,
+	// so freeing them against the *current* pool would be undefined behaviour.
 
-	vkDestroyDescriptorPool(m_logicalDevice, m_descriptorPool, nullptr);
+	// Destroy every pool, not just the current one - additional pools are created on demand
+	// when a pool is exhausted.
+	for (auto& pool : m_descriptorPools)
+		vkDestroyDescriptorPool(m_logicalDevice, pool, nullptr);
+	m_descriptorPools.clear();
+	m_descriptorPool = VK_NULL_HANDLE;
 
 	for(auto& i : m_backbufferBlitPipelineCache)
 	{
@@ -3365,6 +3368,52 @@ void VulkanRenderer::CreateDescriptorPool()
 
 	if (vkCreateDescriptorPool(m_logicalDevice, &poolInfo, nullptr, &m_descriptorPool) != VK_SUCCESS)
 		UnrecoverableError("Failed to create descriptor pool!");
+	m_descriptorPools.emplace_back(m_descriptorPool);
+}
+
+VkDescriptorSet VulkanRenderer::AllocateDescriptorSet(VkDescriptorSetLayout layout, VkDescriptorPool& outPool)
+{
+	// Descriptor sets are cached per pipeline and only released when a referenced texture view
+	// is deleted, so in a streaming open-world title the count grows without bound. A single
+	// fixed pool therefore runs out eventually and used to be a fatal error. Instead, when the
+	// current pool is exhausted, create another one and carry on.
+	for (int attempt = 0; attempt < 2; attempt++)
+	{
+		VkDescriptorSetAllocateInfo allocInfo = {};
+		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+		allocInfo.descriptorPool = m_descriptorPool;
+		allocInfo.descriptorSetCount = 1;
+		allocInfo.pSetLayouts = &layout;
+
+		VkDescriptorSet result = VK_NULL_HANDLE;
+		VkResult r = vkAllocateDescriptorSets(m_logicalDevice, &allocInfo, &result);
+		if (r == VK_SUCCESS)
+		{
+			outPool = m_descriptorPool;
+			return result;
+		}
+		// Only pool exhaustion/fragmentation is recoverable by grabbing a fresh pool.
+		if (r != VK_ERROR_OUT_OF_POOL_MEMORY && r != VK_ERROR_FRAGMENTED_POOL)
+		{
+			UnrecoverableError(fmt::format("Failed to allocate descriptor sets (VkResult={}). Currently allocated: Descriptors={} TextureSamplers={} DynUniformBuffers={} StorageBuffers={}",
+				(sint32)r,
+				performanceMonitor.vk.numDescriptorSets.get(),
+				performanceMonitor.vk.numDescriptorSamplerTextures.get(),
+				performanceMonitor.vk.numDescriptorDynUniformBuffers.get(),
+				performanceMonitor.vk.numDescriptorStorageBuffers.get()
+			).c_str());
+		}
+		if (attempt == 0)
+		{
+			cemuLog_log(LogType::Force, "Vulkan descriptor pool exhausted after {} sets ({} sampler descriptors) - allocating an additional pool (now {})",
+				performanceMonitor.vk.numDescriptorSets.get(),
+				performanceMonitor.vk.numDescriptorSamplerTextures.get(),
+				m_descriptorPools.size() + 1);
+			CreateDescriptorPool(); // replaces m_descriptorPool and records it in m_descriptorPools
+		}
+	}
+	UnrecoverableError("Failed to allocate a descriptor set even from a freshly created pool");
+	return VK_NULL_HANDLE;
 }
 
 VkDescriptorSet VulkanRenderer::backbufferBlit_createDescriptorSet(VkDescriptorSetLayout descriptor_set_layout, LatteTextureViewVk* texViewVk, bool useLinearTexFilter)
@@ -3377,15 +3426,9 @@ VkDescriptorSet VulkanRenderer::backbufferBlit_createDescriptorSet(VkDescriptorS
 	if (it != m_backbufferBlitDescriptorSetCache.cend())
 		return it->second;
 
-	VkDescriptorSetAllocateInfo allocInfo = {};
-	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	allocInfo.descriptorPool = m_descriptorPool;
-	allocInfo.descriptorSetCount = 1;
-	allocInfo.pSetLayouts = &descriptor_set_layout;
-
-	VkDescriptorSet result;
-	if (vkAllocateDescriptorSets(m_logicalDevice, &allocInfo, &result) != VK_SUCCESS)
-		UnrecoverableError("Failed to allocate descriptor sets for backbuffer blit");
+	// Route through the pooled allocator so a full pool spills into a new one rather than aborting.
+	VkDescriptorPool usedPool = VK_NULL_HANDLE;
+	VkDescriptorSet result = AllocateDescriptorSet(descriptor_set_layout, usedPool);
 	performanceMonitor.vk.numDescriptorSets.increment();
 
 	VkDescriptorImageInfo imageInfo = {};
@@ -4472,6 +4515,9 @@ VKRObjectDescriptorSet::VKRObjectDescriptorSet()
 VKRObjectDescriptorSet::~VKRObjectDescriptorSet()
 {
 	auto vkr = VulkanRenderer::GetInstance();
-	vkFreeDescriptorSets(vkr->GetLogicalDevice(), vkr->GetDescriptorPool(), 1, &descriptorSet);
+	// Must free back to the pool this set was actually allocated from - with multiple pools,
+	// using the *current* pool would be undefined behaviour.
+	VkDescriptorPool pool = (descriptorPool != VK_NULL_HANDLE) ? descriptorPool : vkr->GetDescriptorPool();
+	vkFreeDescriptorSets(vkr->GetLogicalDevice(), pool, 1, &descriptorSet);
 	performanceMonitor.vk.numDescriptorSets.decrement();
 }

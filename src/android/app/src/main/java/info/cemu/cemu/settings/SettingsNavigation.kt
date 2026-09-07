@@ -8,6 +8,7 @@ import androidx.navigation.toRoute
 import info.cemu.cemu.settings.account.AccountSettingsScreen
 import info.cemu.cemu.settings.audio.AudioSettingsScreen
 import info.cemu.cemu.settings.customdrivers.CustomDriversScreen
+import info.cemu.cemu.settings.debug.DebugSettingsScreen
 import info.cemu.cemu.settings.emulatedusbdevices.EmulatedUSBDevicesSettingsScreen
 import info.cemu.cemu.settings.gamespath.GamePathsScreen
 import info.cemu.cemu.settings.general.GeneralSettingsScreen
@@ -71,6 +72,9 @@ private object SettingsRoutes {
 
     @Serializable
     object AccountSettingsScreenRoute
+
+    @Serializable
+    object DebugSettingsScreenRoute
 }
 
 fun NavGraphBuilder.settingsNavigation(navController: NavHostController) {
@@ -85,6 +89,12 @@ fun NavGraphBuilder.settingsNavigation(navController: NavHostController) {
                 goToOverlaySettings = { navController.navigate(SettingsRoutes.OverlaySettingsScreenRoute) },
                 goToAccountSettings = { navController.navigate(SettingsRoutes.AccountSettingsScreenRoute) },
                 goToEmulatedUSBDevicesSettings = { navController.navigate(SettingsRoutes.EmulatedUSBDevicesSettingsScreenRoute) },
+                goToDebugSettings = { navController.navigate(SettingsRoutes.DebugSettingsScreenRoute) },
+            )
+        }
+        composable<SettingsRoutes.DebugSettingsScreenRoute> {
+            DebugSettingsScreen(
+                navigateBack = { navController.popBackStack() },
             )
         }
         composable<SettingsRoutes.AudioSettingsScreenRoute> {
@@ -169,7 +179,6 @@ fun NavGraphBuilder.settingsNavigation(navController: NavHostController) {
             composable<SettingsRoutes.GeneralSettingsScreenRoute> {
                 GeneralSettingsScreen(
                     navigateBack = { navController.popBackStack() },
-                    goToGamePathsSettings = { navController.navigate(SettingsRoutes.GamePathsScreenRoute) }
                 )
             }
             composable<SettingsRoutes.GamePathsScreenRoute> {

@@ -4,10 +4,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.compose.dropUnlessResumed
 import androidx.lifecycle.viewmodel.compose.viewModel
+import info.cemu.cemu.common.settings.GameListViewMode
 import info.cemu.cemu.common.settings.GamePadPosition
-import info.cemu.cemu.common.ui.components.Button
 import info.cemu.cemu.common.ui.components.ScreenContent
 import info.cemu.cemu.common.ui.components.SingleSelection
 import info.cemu.cemu.common.ui.localization.tr
@@ -16,7 +15,6 @@ import info.cemu.cemu.nativeinterface.NativeSettings
 @Composable
 fun GeneralSettingsScreen(
     navigateBack: () -> Unit,
-    goToGamePathsSettings: () -> Unit,
     viewModel: GeneralSettingsViewModel = viewModel(),
 ) {
     val context = LocalContext.current
@@ -28,11 +26,6 @@ fun GeneralSettingsScreen(
         appBarText = tr("General settings"),
         navigateBack = navigateBack,
     ) {
-        Button(
-            label = tr("Add game path"),
-            description = tr("Add the root directory of your game(s). It will scan all directories in it for games"),
-            onClick = dropUnlessResumed { goToGamePathsSettings() },
-        )
         SingleSelection(
             label = tr("Language"),
             choice = guiSettings.language,
@@ -68,7 +61,20 @@ fun GeneralSettingsScreen(
             choiceToString = { gamePadPositionToString(it) },
             choices = GamePadPosition.entries,
         )
+        SingleSelection(
+            label = tr("Game list view"),
+            choice = guiSettings.gameListViewMode,
+            onChoiceChanged = { viewModel.setGameListViewMode(it) },
+            choiceToString = { gameListViewModeToString(it) },
+            choices = GameListViewMode.entries,
+        )
     }
+}
+
+private fun gameListViewModeToString(mode: GameListViewMode) = when (mode) {
+    GameListViewMode.LIST -> tr("List")
+    GameListViewMode.GRID -> tr("Grid")
+    GameListViewMode.BOX_ART -> tr("Box art")
 }
 
 private fun gamePadPositionToString(position: GamePadPosition) = when (position) {

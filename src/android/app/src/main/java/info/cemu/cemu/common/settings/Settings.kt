@@ -17,8 +17,12 @@ data class EmulationSettings(
 )
 
 @Serializable
+enum class GameListViewMode { LIST, GRID, BOX_ART }
+
+@Serializable
 data class GuiSettings(
     val language: String = DEFAULT_LANGUAGE,
+    val gameListViewMode: GameListViewMode = GameListViewMode.LIST,
 )
 
 @Serializable
@@ -32,7 +36,7 @@ data class InputOverlayRect(
 @Serializable
 data class InputOverlaySettings(
     val isVibrateOnTouchEnabled: Boolean = false,
-    val isOverlayEnabled: Boolean = false,
+    val isOverlayEnabled: Boolean = true,
     val controllerIndex: Int = 0,
     val alpha: Int = 64,
     val inputVisibilityMap: Map<OverlayInputConfig, Boolean> = emptyMap(),

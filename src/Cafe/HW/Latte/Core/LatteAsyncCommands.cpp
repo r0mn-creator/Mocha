@@ -2,6 +2,7 @@
 #include "Cafe/HW/Latte/Core/LatteAsyncCommands.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/Core/LatteTexture.h"
+#include "Cafe/HW/Latte/Renderer/Renderer.h" // g_renderer, for the device drain before freeing pipelines
 
 void LatteThread_Exit();
 
@@ -40,6 +41,7 @@ typedef struct
 
 #define ASYNC_CMD_FORCE_TEXTURE_READBACK		1
 #define ASYNC_CMD_DELETE_SHADER					2
+#define ASYNC_CMD_RELOAD_SHADER					3
 
 std::queue<LatteAsyncCommand_t> LatteAsyncCommandQueue;
 
@@ -72,6 +74,20 @@ void LatteAsyncCommands_queueDeleteShader(uint64 shaderBaseHash, uint64 shaderAu
 	LatteAsyncCommand_t asyncCommand = {};
 	// setup command
 	asyncCommand.type = ASYNC_CMD_DELETE_SHADER;
+
+	asyncCommand.deleteShader.shaderBaseHash = shaderBaseHash;
+	asyncCommand.deleteShader.shaderAuxHash = shaderAuxHash;
+	asyncCommand.deleteShader.shaderType = shaderType;
+
+	swl_gpuAsyncCommands.LockWrite();
+	LatteAsyncCommandQueue.push(asyncCommand);
+	swl_gpuAsyncCommands.UnlockWrite();
+}
+
+void LatteAsyncCommands_queueReloadShader(uint64 shaderBaseHash, uint64 shaderAuxHash, LatteConst::ShaderType shaderType)
+{
+	LatteAsyncCommand_t asyncCommand = {};
+	asyncCommand.type = ASYNC_CMD_RELOAD_SHADER;
 
 	asyncCommand.deleteShader.shaderBaseHash = shaderBaseHash;
 	asyncCommand.deleteShader.shaderAuxHash = shaderAuxHash;
@@ -126,6 +142,29 @@ void LatteAsyncCommands_checkAndExecute()
 		else if (asyncCommand.type == ASYNC_CMD_DELETE_SHADER)
 		{
 			LatteSHRC_RemoveFromCacheByHash(asyncCommand.deleteShader.shaderBaseHash, asyncCommand.deleteShader.shaderAuxHash, asyncCommand.deleteShader.shaderType);
+		}
+		else if (asyncCommand.type == ASYNC_CMD_RELOAD_SHADER)
+		{
+			// Live graphic pack switching. Runs on the GPU thread at a safe point, but the GPU may
+			// still be executing command buffers that reference the pipelines we are about to
+			// destroy, so drain the device first.
+			LatteDecompilerShader* shader = nullptr;
+			auto t = asyncCommand.deleteShader.shaderType;
+			if (t == LatteConst::ShaderType::Vertex)
+				shader = LatteSHRC_FindVertexShader(asyncCommand.deleteShader.shaderBaseHash, asyncCommand.deleteShader.shaderAuxHash);
+			else if (t == LatteConst::ShaderType::Geometry)
+				shader = LatteSHRC_FindGeometryShader(asyncCommand.deleteShader.shaderBaseHash, asyncCommand.deleteShader.shaderAuxHash);
+			else if (t == LatteConst::ShaderType::Pixel)
+				shader = LatteSHRC_FindPixelShader(asyncCommand.deleteShader.shaderBaseHash, asyncCommand.deleteShader.shaderAuxHash);
+			if (shader)
+			{
+				g_renderer->Flush(true); // waitIdle - GPU must not still be using these pipelines
+				// frees the shader, which cascades to its PipelineInfos and their descriptor sets,
+				// and unregisters those from the pipeline cache
+				LatteShader_free(shader);
+				cemuLog_log(LogType::Force, "Live-reloaded shader {:016x}_{:016x} (type {})",
+					asyncCommand.deleteShader.shaderBaseHash, asyncCommand.deleteShader.shaderAuxHash, (int)t);
+			}
 		}
 		else
 		{

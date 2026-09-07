@@ -2,6 +2,7 @@ package info.cemu.cemu.settings
 
 import androidx.compose.runtime.Composable
 import androidx.lifecycle.compose.dropUnlessResumed
+import info.cemu.cemu.BuildConfig
 import info.cemu.cemu.common.ui.components.Button
 import info.cemu.cemu.common.ui.components.ScreenContent
 import info.cemu.cemu.common.ui.localization.tr
@@ -15,6 +16,7 @@ fun SettingsHomeScreen(
     goToAudioSettings: () -> Unit,
     goToAccountSettings: () -> Unit,
     goToOverlaySettings: () -> Unit,
+    goToDebugSettings: () -> Unit,
     navigateBack: () -> Unit
 ) {
     ScreenContent(
@@ -49,5 +51,11 @@ fun SettingsHomeScreen(
             label = tr("Account settings"),
             onClick = dropUnlessResumed(block = goToAccountSettings)
         )
+        if (BuildConfig.DEBUG) {
+            Button(
+                label = tr("Debug settings"),
+                onClick = dropUnlessResumed(block = goToDebugSettings)
+            )
+        }
     }
 }
