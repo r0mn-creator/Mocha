@@ -92,8 +92,14 @@ android {
             externalNativeBuild {
                 cmake {
                     arguments(
+                        // AGP maps this variant to CMAKE_BUILD_TYPE=Debug, whose NDK config
+                        // passes no -O flag at all, so every TU would otherwise build at -O0.
                         "-DCMAKE_C_FLAGS_DEBUG=-O2 -g",
-                        "-DCMAKE_CXX_FLAGS_DEBUG=-O2 -g"
+                        "-DCMAKE_CXX_FLAGS_DEBUG=-O2 -g",
+                        // ...and Debug also implies CEMU_DEBUG_ASSERT, which switches on every
+                        // cemu_assert and every cemuLog_logDebug call site. We still want -g and
+                        // the .debug package id, just not the debug-only runtime cost.
+                        "-DCEMU_ENABLE_DEBUG_ASSERT=OFF"
                     )
                 }
             }

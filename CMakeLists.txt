@@ -71,7 +71,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-add_compile_definitions($<$<CONFIG:Debug>:CEMU_DEBUG_ASSERT>) # if build type is debug, set CEMU_DEBUG_ASSERT
+# CEMU_DEBUG_ASSERT turns on every cemu_assert check AND every cemuLog_logDebug call
+# site. On Android the gradle "debug" variant maps to CMAKE_BUILD_TYPE=Debug, so a build
+# that is otherwise optimised still pays for both -- in NFS MW U that is ~45,000
+# synchronous log writes per run from three HLE call sites alone, plus asserts inside the
+# JIT backend. Kept ON by default (upstream behaviour); pass -DCEMU_ENABLE_DEBUG_ASSERT=OFF
+# to get a debuggable (-g, .debug package) build without the debug-only runtime cost.
+option(CEMU_ENABLE_DEBUG_ASSERT "Enable cemu_assert checks and cemuLog_logDebug output in Debug builds" ON)
+if(CEMU_ENABLE_DEBUG_ASSERT)
+	add_compile_definitions($<$<CONFIG:Debug>:CEMU_DEBUG_ASSERT>)
+endif()
 
 add_definitions(-DEMULATOR_VERSION_MAJOR=${EMULATOR_VERSION_MAJOR})
 add_definitions(-DEMULATOR_VERSION_MINOR=${EMULATOR_VERSION_MINOR})
