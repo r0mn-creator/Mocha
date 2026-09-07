@@ -627,7 +627,22 @@ void LatteOverlay_updateStats(double fps, sint32 drawcalls, sint32 fastDrawcalls
 	// Logged before the overlay-disabled early-out so measurement does not depend
 	// on the overlay being visible.
 	if (DbgFpsLogEnabled())
-		cemuLog_log(LogType::Force, "MOCHAFPS fps={:.2f} draws={} fastdraws={}", fps, drawcalls, fastDrawcalls);
+	{
+		// Per-frame GPU-thread time breakdown, in microseconds, so a slow frame can be
+		// attributed instead of guessed at. "wait" is the one to watch: it covers
+		// GX2DrawDone's forced full sync (texture readback + occlusion query drain),
+		// which on Vulkan is unconditional -- see GX2_Event.cpp.
+		auto us = [](LattePerfStatTimer& t) { return PPCTimer_tscToMicroseconds(t.getPreviousFrameValue()); };
+		cemuLog_log(LogType::Force,
+			"MOCHAFPS fps={:.2f} draws={} fastdraws={} "
+			"gpu_frame={} idle={} fence={} wait={} tex={} vtx={} shader={} idx={} mrt={} dcapi={}",
+			fps, drawcalls, fastDrawcalls,
+			us(performanceMonitor.gpuTime_frameTime), us(performanceMonitor.gpuTime_idleTime),
+			us(performanceMonitor.gpuTime_fenceTime), us(performanceMonitor.gpuTime_waitForAsync),
+			us(performanceMonitor.gpuTime_dcStageTextures), us(performanceMonitor.gpuTime_dcStageVertexMgr),
+			us(performanceMonitor.gpuTime_dcStageShaderAndUniformMgr), us(performanceMonitor.gpuTime_dcStageIndexMgr),
+			us(performanceMonitor.gpuTime_dcStageMRT), us(performanceMonitor.gpuTime_dcStageDrawcallAPI));
+	}
 #endif
 
 	if (GetConfig().overlay.position == ScreenPosition::kDisabled)
